@@ -47,18 +47,10 @@ def get_players():
     return players
 
 def get_latest_gift_code():
-    """爬取 kingshotoptimizer.com 最新的一個禮物碼 (排除 HTML 關鍵字)"""
+    """精準爬取 Active codes 第一個禮物碼"""
     print("正在爬取最新禮物碼...")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    # 必須過濾掉的 HTML 標籤與網站無關單字
-    HTML_IGNORE = {
-        "DOCTYPE", "HTML", "HEAD", "BODY", "META", "SCRIPT", "STYLE", "LINK", 
-        "DIV", "SPAN", "CLASS", "ACTIVE", "EXPIRED", "OPTIMIZER", "GUIDES", 
-        "GOVERNOR", "CHARMS", "HERO", "GEAR", "PLANS", "HOME", "SOURCE", 
-        "VERIFIED", "ADDED", "COPY", "KINGSHOT"
     }
     
     try:
@@ -66,19 +58,31 @@ def get_latest_gift_code():
         res.raise_for_status()
         
         soup = BeautifulSoup(res.text, "html.parser")
-        # 取得純文字內容，避免抓到 HTML 標籤屬性 (如 DOCTYPE)
-        text_content = soup.get_text()
         
+        # 尋找按鈕文字為 Copy 的前一個同層/父層元素，或直接匹配禮物碼卡片
         import re
-        matches = re.findall(r'([A-Z0-9]{5,15})', text_content)
+        # 先切出 Active codes 到 Expired codes 之間的文字，避免抓到日期或歷史碼
+        content = res.text
+        if "Active codes" in content:
+            content = content.split("Active codes")[1]
+        if "Expired codes" in content:
+            content = content.split("Expired codes")[0]
+            
+        soup_active = BeautifulSoup(content, "html.parser")
+        text = soup_active.get_text(separator=" ")
         
-        for code in matches:
-            if code not in HTML_IGNORE:
-                return code
+        # 匹配獨立出現的英文數字組合（排除日期格式）
+        tokens = text.split()
+        for token in tokens:
+            token = token.strip()
+            # 排除純數字、長度不對、或是常見單字
+            if re.match(r'^[A-Za-z0-9]{4,15}$', token):
+                if token not in {"Copy", "Source", "Verified", "Added", "in-game"} and not token.isdigit():
+                    return token
     except Exception as e:
         print(f"⚠️ 爬取失敗，錯誤: {e}")
         
-    return "KS0810" # 預設最新碼
+    return "KS0810"
 
 def generate_sign(fid, kid, cdk, time_str):
     """計算官方 API 驗證用的 MD5 sign 簽名"""

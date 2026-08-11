@@ -2,6 +2,7 @@
 import csv
 import io
 import time
+import re
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -58,11 +59,12 @@ def get_latest_gift_code():
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if res.status_code == 200 and "Active codes" in res.text:
             active_part = res.text.split("Active codes")[1].split("Expired codes")[0]
-            import re
-            codes = re.findall(r'\b[A-Za-z0-9]{5,15}\b', active_part)
+            # 💡 修正：將長度限制放寬至 25，以容納像 OFFICIALSTORE08011 這種長禮包碼
+            codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', active_part)
             ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS"}
             for code in codes:
                 if code.upper() not in ignore_list and not code.isdigit():
+                    print(f"👉 成功抓取最新禮包碼: {code}")
                     return code
     except Exception as e:
         print(f"⚠️ 爬取失敗: {e}")
@@ -85,21 +87,23 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         except:
             page.locator("text=/确认|兌換|Confirm|Redeem/i").first.click()
 
-        time.sleep(3.5)
+        # 💡 延長雲端等待時間至 5 秒，確保彈出提示完整載入
+        time.sleep(5.0)
         
-        body_text = page.inner_text("body")
+        full_text = page.content()
         try:
-            toast_text = page.locator(".el-message, .toast, .alert, .modal, [class*='message'], [class*='toast']").all_inner_texts()
-            full_text = body_text + " " + " ".join(toast_text)
+            toast_elements = page.locator(".el-message, .toast, .alert, .modal, [class*='message'], [class*='toast'], [role='alert']").all_inner_texts()
+            if toast_elements:
+                full_text += " " + " ".join(toast_elements)
         except:
-            full_text = body_text
+            pass
 
         if any(word in full_text for word in ["已领取", "已領取", "重复领取", "重複領取", "same gift"]):
             return "claimed", "⚠️ 已經領取過該禮物"
         elif any(word in full_text for word in ["成功", "success", "Successfully"]):
             return "success", "✅ 兌換成功！"
         elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
-            return "failed", f"❌ 禮包碼無效或已過期"
+            return "failed", "❌ 禮包碼無效或已過期"
         else:
             return "success", "✅ 兌換指令已送出"
 
@@ -110,7 +114,7 @@ def send_discord_webhook(gift_code, results):
     """將結果發送至 Discord Webhook"""
     print("正在傳送結果給 Discord...")
     
-    success_count = sum(1 for r in results if r["status"] == "success")
+    success_count = sum(1 for r in results if r["status"] == "success" and "成功" in r["msg"])
     claimed_count = sum(1 for r in results if r["status"] == "claimed")
     fail_count = sum(1 for r in results if r["status"] == "failed")
     

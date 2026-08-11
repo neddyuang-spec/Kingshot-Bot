@@ -59,17 +59,25 @@ def get_latest_gift_code():
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if res.status_code == 200 and "Active codes" in res.text:
             active_part = res.text.split("Active codes")[1].split("Expired codes")[0]
-            # 💡 修正：將長度限制放寬至 25，以容納像 OFFICIALSTORE08011 這種長禮包碼
             codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', active_part)
             ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS"}
+            
+            valid_codes = []
             for code in codes:
                 if code.upper() not in ignore_list and not code.isdigit():
-                    print(f"👉 成功抓取最新禮包碼: {code}")
-                    return code
+                    if code not in valid_codes:
+                        valid_codes.append(code)
+            
+            print(f"👉 抓取到的候選禮包碼清單: {valid_codes}")
+            if valid_codes:
+                # 通常排在最前面的就是最新加入的
+                latest = valid_codes[0]
+                print(f"👉 決定使用最新禮包碼: {latest}")
+                return latest
     except Exception as e:
         print(f"⚠️ 爬取失敗: {e}")
         
-    return "KS0810" # 預設 fallback
+    return "KS0810"
 
 def redeem_with_browser(page, player_id, kingdom, gift_code):
     """執行瀏覽器自動兌換"""
@@ -87,24 +95,28 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         except:
             page.locator("text=/确认|兌換|Confirm|Redeem/i").first.click()
 
-        # 💡 延長雲端等待時間至 5 秒，確保彈出提示完整載入
-        time.sleep(5.0)
+        # 雲端環境拉長等待時間至 6 秒
+        time.sleep(6.0)
         
         full_text = page.content()
         try:
-            toast_elements = page.locator(".el-message, .toast, .alert, .modal, [class*='message'], [class*='toast'], [role='alert']").all_inner_texts()
+            toast_elements = page.locator(".el-message, .toast, .alert, .modal, [class*='message'], [class*='toast'], [role='alert'], div").all_inner_texts()
             if toast_elements:
                 full_text += " " + " ".join(toast_elements)
         except:
             pass
 
-        if any(word in full_text for word in ["已领取", "已領取", "重复领取", "重複領取", "same gift"]):
+        # 關鍵字比對
+        if any(word in full_text for word in ["已领取", "已領取", "重复领取", "重複領取", "same gift", "already"]):
             return "claimed", "⚠️ 已經領取過該禮物"
         elif any(word in full_text for word in ["成功", "success", "Successfully"]):
             return "success", "✅ 兌換成功！"
         elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
             return "failed", "❌ 禮包碼無效或已過期"
         else:
+            # 印出部分網頁文字方便除錯
+            clean_text = full_text.replace('\n', ' ')[:100]
+            print(f"🔍 [Debug] 未命中關鍵字，當前頁面文字片段: {clean_text}")
             return "success", "✅ 兌換指令已送出"
 
     except Exception as e:
@@ -140,9 +152,9 @@ def send_discord_webhook(gift_code, results):
         print(f"❌ Discord Webhook 發送失敗: {e}")
 
 def main():
-    players = get_players()
     gift_code = get_latest_gift_code()
-    print(f"👉 取得最新禮物碼：{gift_code}")
+    players = get_players()
+    print(f"👉 最終使用禮物碼：{gift_code}")
     
     results = []
     

@@ -52,15 +52,25 @@ def get_players():
     ]
 
 def get_latest_gift_code():
-    """自動爬取最新禮包碼"""
+    """自動爬取最新禮包碼（加入防快取參數）"""
     print("正在爬取最新禮物碼...")
-    url = "https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/"
+    # 💡 加入時間戳記作為防快取參數，強制 Jina 抓取即時最新網頁
+    cache_buster = int(time.time())
+    url = f"https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/?cb={cache_buster}"
+    
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if res.status_code == 200 and "Active codes" in res.text:
-            active_part = res.text.split("Active codes")[1].split("Expired codes")[0]
+        if res.status_code == 200:
+            text = res.text
+            if "Active codes" in text:
+                active_part = text.split("Active codes")[1]
+                if "Expired codes" in active_part:
+                    active_part = active_part.split("Expired codes")[0]
+            else:
+                active_part = text
+                
             codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', active_part)
-            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS"}
+            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS", "THE", "AND"}
             
             valid_codes = []
             for code in codes:
@@ -70,7 +80,6 @@ def get_latest_gift_code():
             
             print(f"👉 抓取到的候選禮包碼清單: {valid_codes}")
             if valid_codes:
-                # 通常排在最前面的就是最新加入的
                 latest = valid_codes[0]
                 print(f"👉 決定使用最新禮包碼: {latest}")
                 return latest
@@ -95,7 +104,6 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         except:
             page.locator("text=/确认|兌換|Confirm|Redeem/i").first.click()
 
-        # 雲端環境拉長等待時間至 6 秒
         time.sleep(6.0)
         
         full_text = page.content()
@@ -106,7 +114,6 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         except:
             pass
 
-        # 關鍵字比對
         if any(word in full_text for word in ["已领取", "已領取", "重复领取", "重複領取", "same gift", "already"]):
             return "claimed", "⚠️ 已經領取過該禮物"
         elif any(word in full_text for word in ["成功", "success", "Successfully"]):
@@ -114,9 +121,6 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
             return "failed", "❌ 禮包碼無效或已過期"
         else:
-            # 印出部分網頁文字方便除錯
-            clean_text = full_text.replace('\n', ' ')[:100]
-            print(f"🔍 [Debug] 未命中關鍵字，當前頁面文字片段: {clean_text}")
             return "success", "✅ 兌換指令已送出"
 
     except Exception as e:

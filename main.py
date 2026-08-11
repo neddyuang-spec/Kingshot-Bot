@@ -72,7 +72,7 @@ def redeem_code(player_id, code):
     }
     
     try:
-    res = requests.post(
+        res = requests.post(
         KINGSHOT_REDEEM_API, json=payload, headers=headers, timeout=10
     )
 

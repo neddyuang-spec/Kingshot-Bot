@@ -12,34 +12,51 @@ REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 # ============================================
 
 def get_players():
-    """讀取 Google 試算表中的盟友資料"""
+    """讀取 Google 試算表中的盟友資料（彈性相容欄位名稱）"""
     print("正在讀取盟友資料...")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     try:
         res = requests.get(SHEET_CSV_URL, headers=headers, timeout=15)
         res.raise_for_status()
-    except Exception as e:
-        print(f"❌ 讀取試算表失敗: {e}")
-        return []
-
-    csv_text = res.content.decode('utf-8-sig')
-    reader = csv.DictReader(io.StringIO(csv_text))
-    
-    players = []
-    for row in reader:
-        kingdom = row.get("Kingdom", "").strip()
-        name = row.get("Name", "").strip()
-        player_id = row.get("PlayerID", "").strip()
         
-        if player_id:
-            players.append({
-                "kingdom": kingdom or "1641",
-                "name": name,
-                "player_id": player_id
-            })
-    return players
+        csv_text = res.content.decode('utf-8-sig')
+        reader = csv.DictReader(io.StringIO(csv_text))
+        
+        players = []
+        for row in reader:
+            # 轉成小寫 key 以防欄位大小寫不同 (如 kingdom / Kingdom / KingdomID)
+            row_lower = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if k}
+            
+            kingdom = row_lower.get("kingdom") or row_lower.get("服號") or "1641"
+            name = row_lower.get("name") or row_lower.get("名字") or row_lower.get("player") or "盟友"
+            player_id = row_lower.get("playerid") or row_lower.get("player_id") or row_lower.get("id") or row_lower.get("玩家id")
+            
+            if player_id:
+                players.append({
+                    "kingdom": kingdom,
+                    "name": name,
+                    "player_id": player_id
+                })
+        
+        if players:
+            return players
+            
+    except Exception as e:
+        print(f"❌ 試算表讀取失敗: {e}")
+
+    # 如果試算表讀取失敗或格式對不上，使用預設的盟友名單
+    print("⚠️ 啟用備用盟友名單")
+    return [
+        {"kingdom": "1641", "name": "DasLight", "player_id": "246147093"},
+        {"kingdom": "1641", "name": "肥豬", "player_id": "264788350"},
+        {"kingdom": "1641", "name": "Ogre", "player_id": "279237769"},
+        {"kingdom": "1641", "name": "MiniLight", "player_id": "306868384"},
+        {"kingdom": "1641", "name": "HinokiMiller", "player_id": "265085587"},
+        {"kingdom": "1641", "name": "Flora", "player_id": "327944637"},
+        {"kingdom": "1641", "name": "帥光光", "player_id": "347892324"}
+    ]
 
 def get_latest_gift_code():
     """使用具有 JavaScript 渲染能力的解析 API 抓取最新禮物碼"""

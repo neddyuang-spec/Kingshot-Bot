@@ -11,7 +11,7 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKaw
 # Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
-# 官方舊版直接兌換 API 端點 (不經過新版 Akamai 防火牆)
+# 官方直接兌換 API 端點
 REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 
 # 官方 API MD5 簽名金鑰
@@ -93,35 +93,43 @@ def get_latest_gift_code():
     return "KS0810"
 
 def generate_sign(params):
-    """依照官方 API 規則拼接 key=value + SALT 算出 MD5 簽名"""
+    """
+    正確的官方簽名規則：
+    1. 依照 key 字母大小排序（排除 sign）
+    2. 用 & 串接為 key=value
+    3. 末尾直接拼接 SALT 算出 md5
+    """
     sorted_keys = sorted([k for k in params.keys() if k != "sign"])
     query_str = "&".join([f"{k}={params[k]}" for k in sorted_keys])
-    sign_str = query_str + SALT
-    return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
+    raw_str = query_str + SALT
+    sign = hashlib.md5(raw_str.encode('utf-8')).hexdigest()
+    return sign
 
 def redeem_code(player_id, kingdom, gift_code):
-    """直接發送兌換請求 (時間欄位採用秒)"""
-    # 關鍵修正：時間戳改為『秒』(int(time.time()))
+    """發送兌換請求 (時間戳採用秒)"""
     t_sec = str(int(time.time()))
     
-    p_redeem = {
+    # 建立純淨參數表
+    params = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
         "kid": str(kingdom).strip(),
         "time": t_sec
     }
-    p_redeem["sign"] = generate_sign(p_redeem)
+    
+    # 算出 sign 之後帶入
+    params["sign"] = generate_sign(params)
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Origin": "https://kingshot-giftcode.centurygame.com",
         "Referer": "https://kingshot-giftcode.centurygame.com/",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
     }
     
     try:
-        res = requests.post(REDEEM_API_URL, data=p_redeem, headers=headers, timeout=12)
-        print(f"DEBUG 原始回應 [{player_id}]: HTTP {res.status_code} - {res.text}")
+        res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=12)
+        print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
         
         try:
             result = res.json()
@@ -135,7 +143,7 @@ def redeem_code(player_id, kingdom, gift_code):
             return "failed", "❌ 簽名錯誤 (Sign Error)"
         elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:
             return "claimed", "⚠️ 已重複領取過"
-        elif err_code == 0 or "success" in msg.lower() or "成功" in msg:
+        elif err_code == 0 or "success" in msg.lower() or "成功" in msg or result.get("code") == 1 and "SUCCESS" in msg.upper():
             return "success", "✅ 兌換成功！"
         else:
             return "failed", f"❌ 失敗 ({msg})"

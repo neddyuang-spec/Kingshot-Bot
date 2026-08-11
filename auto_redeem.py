@@ -91,24 +91,32 @@ def get_latest_gift_code():
         
     return "KS0810"
 
-def generate_sign(fid, kid, cdk, time_str):
-    """計算官方 API MD5 簽名"""
-    # 官方要求的升序排序 key 組合: cdk, fid, kid, time + salt
-    raw_str = f"cdk={cdk}&fid={fid}&kid={kid}&time={time_str}{SALT}"
-    return hashlib.md5(raw_str.encode('utf-8')).hexdigest()
+def generate_sign(params):
+    """依照官方 JS 規則：按 key 字母排序組合後加上 Salt 算出 MD5"""
+    # 1. 排除 sign 與空值
+    filtered_keys = [k for k in sorted(params.keys()) if k != "sign" and params[k] is not None]
+    
+    # 2. 拼接 key=value
+    query_string = "&".join([f"{k}={params[k]}" for k in filtered_keys])
+    
+    # 3. 加上官方預設 Salt 進行 MD5
+    sign_str = query_string + SALT
+    return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
     """呼叫官方 API 兌換禮物碼"""
     current_time = str(int(time.time()))
-    sign = generate_sign(player_id, kingdom, gift_code, current_time)
     
-    payload = {
-        "fid": str(player_id),
-        "kid": str(kingdom),
-        "cdk": str(gift_code),
-        "time": current_time,
-        "sign": sign
+    # 準備基礎參數
+    params = {
+        "cdk": str(gift_code).strip(),
+        "fid": str(player_id).strip(),
+        "kid": str(kingdom).strip(),
+        "time": current_time
     }
+    
+    # 計算正確簽名
+    params["sign"] = generate_sign(params)
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -119,18 +127,24 @@ def redeem_code(player_id, kingdom, gift_code):
     }
     
     try:
-        res = requests.post(REDEEM_API_URL, data=payload, headers=headers, timeout=10)
+        res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=10)
         print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
         result = res.json()
         
-        err_code = result.get("err_code", result.get("code", -1))
+        code = result.get("code", -1)
+        err_code = result.get("err_code", -1)
         msg = str(result.get("msg", result.get("message", "未知結果")))
         
-        # 精準狀態判斷
-        if err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower():
+        # 精準判斷狀態（修正 Sign Error 不會誤判為成功）
+        if "Sign Error" in msg or "sign error" in msg.lower():
+            return "failed", "❌ 簽名錯誤 (Sign Error)"
+        elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower():
             return "claimed", "⚠️ 已重複領取過"
-        elif err_code == 0 or "success" in msg.lower() or "成功" in msg:
-            return "success", "✅ 兌換成功！"
+        elif code == 0 or err_code == 0 or "success" in msg.lower() or "成功" in msg:
+            # 當 code == 0 或 err_code == 0 且沒有 Sign Error 時才是真正成功
+            if msg in ["SUCCESS", "success", ""] or err_code == 0:
+                return "success", "✅ 兌換成功！"
+            return "failed", f"❌ 失敗 ({msg})"
         else:
             return "failed", f"❌ 失敗 ({msg})"
             

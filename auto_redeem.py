@@ -52,9 +52,8 @@ def get_players():
     ]
 
 def get_latest_gift_code():
-    """自動爬取最新禮包碼（加入防快取參數）"""
+    """自動爬取最新禮包碼（加入嚴格篩選：必須大寫且包含英文字母與數字）"""
     print("正在爬取最新禮物碼...")
-    # 💡 加入時間戳記作為防快取參數，強制 Jina 抓取即時最新網頁
     cache_buster = int(time.time())
     url = f"https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/?cb={cache_buster}"
     
@@ -70,15 +69,17 @@ def get_latest_gift_code():
                 active_part = text
                 
             codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', active_part)
-            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS", "THE", "AND"}
             
             valid_codes = []
             for code in codes:
-                if code.upper() not in ignore_list and not code.isdigit():
+                # 嚴格篩選：必須全大寫、且同時包含英文字母與數字（徹底排除 Title、Redeem 等一般單字）
+                has_letter = any(c.isalpha() for c in code)
+                has_digit = any(c.isdigit() for c in code)
+                if code.isupper() and has_letter and has_digit:
                     if code not in valid_codes:
                         valid_codes.append(code)
             
-            print(f"👉 抓取到的候選禮包碼清單: {valid_codes}")
+            print(f"👉 篩選後的有效禮包碼清單: {valid_codes}")
             if valid_codes:
                 latest = valid_codes[0]
                 print(f"👉 決定使用最新禮包碼: {latest}")

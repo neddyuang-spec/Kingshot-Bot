@@ -5,16 +5,12 @@ import hashlib
 import requests
 
 # ================= 基礎設定 =================
-# 請更換為你的 Google 試算表 CSV 連結
-# 方法：試算表右上角「共用」->「知道連結者皆可檢視」-> 複製網址後將結尾 /edit 改成 /export?format=csv
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
-
-# Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
-REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
-# 官方 API 加密 Salt (Century Games 常用金鑰)
-SALT = "centurylight2023"
+REDEEM_API_URL = "https://ks-giftcode.centurygame.com/api/gift_code"
+# Century Games 官方實際使用之 SALT 金鑰
+SALT = "tB87#kPtkxqOS2"
 # ============================================
 
 def get_players():
@@ -92,22 +88,17 @@ def get_latest_gift_code():
     return "KS0810"
 
 def generate_sign(params):
-    """依照官方 JS 規則：按 key 字母排序組合後加上 Salt 算出 MD5"""
-    # 1. 排除 sign 與空值
-    filtered_keys = [k for k in sorted(params.keys()) if k != "sign" and params[k] is not None]
-    
-    # 2. 拼接 key=value
-    query_string = "&".join([f"{k}={params[k]}" for k in filtered_keys])
-    
-    # 3. 加上官方預設 Salt 進行 MD5
-    sign_str = query_string + SALT
+    """依照官方 API 規則拼接 key=value + SALT 算出 MD5 簽名"""
+    # 排除 sign 本身並以 key 字母升序排序
+    sorted_keys = sorted([k for k in params.keys() if k != "sign"])
+    query_str = "&".join([f"{k}={params[k]}" for k in sorted_keys])
+    sign_str = query_str + SALT
     return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
     """呼叫官方 API 兌換禮物碼"""
-    current_time = str(int(time.time()))
+    current_time = str(int(time.time() * 1000))  # 官方使用毫秒級時間戳
     
-    # 準備基礎參數
     params = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
@@ -115,11 +106,10 @@ def redeem_code(player_id, kingdom, gift_code):
         "time": current_time
     }
     
-    # 計算正確簽名
     params["sign"] = generate_sign(params)
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Origin": "https://ks-giftcode.centurygame.com",
         "Referer": "https://ks-giftcode.centurygame.com/",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -131,20 +121,16 @@ def redeem_code(player_id, kingdom, gift_code):
         print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
         result = res.json()
         
-        code = result.get("code", -1)
-        err_code = result.get("err_code", -1)
+        err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
         
-        # 精準判斷狀態（修正 Sign Error 不會誤判為成功）
-        if "Sign Error" in msg or "sign error" in msg.lower():
+        # 精準狀態判斷
+        if "Sign Error" in msg:
             return "failed", "❌ 簽名錯誤 (Sign Error)"
-        elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower():
+        elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:
             return "claimed", "⚠️ 已重複領取過"
-        elif code == 0 or err_code == 0 or "success" in msg.lower() or "成功" in msg:
-            # 當 code == 0 或 err_code == 0 且沒有 Sign Error 時才是真正成功
-            if msg in ["SUCCESS", "success", ""] or err_code == 0:
-                return "success", "✅ 兌換成功！"
-            return "failed", f"❌ 失敗 ({msg})"
+        elif err_code == 0 or "success" in msg.lower() or "成功" in msg:
+            return "success", "✅ 兌換成功！"
         else:
             return "failed", f"❌ 失敗 ({msg})"
             

@@ -1,37 +1,30 @@
 import csv
 import io
 import time
+import hashlib
 import requests
-from bs4 import BeautifulSoup
 
 # ================= 基礎設定 =================
-# 請將這裡替換為你重新從 Google Sheet 複製的完整 CSV 連結
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
+# 1. Google 試算表 CSV 發布連結
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhIRWwkL585YTtEl9s31cBuA4yk3UVc5xnaOScOk0/pub?output=csv"
 
-# Discord Webhook 網址
+# 2. Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
+# 3. 網址設定
 OPTIMIZER_URL = "https://kingshotoptimizer.com/gift-codes/"
 REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 # ============================================
 
 def get_players():
-    """從 Google 試算表 CSV 讀取盟友資料"""
+    """讀取 Google 試算表盟友資料"""
     print("正在讀取盟友資料...")
-    
-    # 加上 User-Agent 避免 Google 伺服器拒絕 GitHub Actions 機器人請求
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    
-    try:
-        res = requests.get(SHEET_CSV_URL, headers=headers, timeout=15)
-        res.raise_for_status()
-    except requests.exceptions.HTTPError as err:
-        print(f"❌ 讀取 CSV 失敗，請確認 Google 試算表是否已『發布到網路』且網址無誤。錯誤訊息: {err}")
-        raise err
+    res = requests.get(SHEET_CSV_URL, headers=headers, timeout=15)
+    res.raise_for_status()
 
-    # 避免 UTF-8 BOM 開頭問題
     csv_text = res.content.decode('utf-8-sig')
     reader = csv.DictReader(io.StringIO(csv_text))
     
@@ -43,71 +36,88 @@ def get_players():
         
         if player_id:
             players.append({
-                "kingdom": kingdom or "1641",
+                "kingdom": kingdom or "1641", # 若表格沒填王國號，預設 1641
                 "name": name,
                 "player_id": player_id
             })
     return players
 
 def get_latest_gift_code():
-    """爬取 kingshotoptimizer.com 最新禮物碼"""
+    """精準爬取 kingshotoptimizer.com 最新的一個禮物碼"""
     print("正在爬取最新禮物碼...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     try:
         res = requests.get(OPTIMIZER_URL, headers=headers, timeout=15)
         res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
         
+        # 尋找頁面中的最新 Active code（解析網頁原始碼中的第一個禮物碼區塊）
         import re
-        # 排除非禮物碼關鍵字
-        exclude = ["GIFT", "CODES", "COPY", "ACTIVE", "EXPIRED", "OPTIMIZER", "HOME", "GUIDES"]
-        matches = re.findall(r'>([A-Z0-9]{4,15})</', res.text)
-        for m in matches:
-            if m.isupper() and m not in exclude:
-                return m
-    except Exception as e:
-        print(f"⚠️ 爬取禮物碼失敗，使用備用禮物碼: {e}")
+        # 尋找 KS0810 / HAPPYCATDAY 這類連續大寫字母+數字的代碼
+        codes = re.findall(r'([A-Z0-9]{5,15})', res.text)
         
-    return "KS0810"
+        # 濾掉常規單字，保留真正的禮物碼
+        ignore_words = {"OPTIMIZER", "EXPLORE", "GUIDES", "GOVERNOR", "CHARMS", "ACTIVE", "EXPIRED", "COPY", "VERIFIED", "SOURCE", "ADDED"}
+        for code in codes:
+            if code not in ignore_words and len(code) >= 5:
+                # 第一個匹配到的最新代碼 (例如 KS0810)
+                return code
+    except Exception as e:
+        print(f"⚠️ 爬取禮物碼失敗，錯誤: {e}")
+        
+    return "KS0810" # 備用預設碼
+
+def generate_sign(fid, kid, cdk, time_str):
+    """根據官方規範產生 sign 簽名"""
+    # 將參數按 key 排序後組合加密 (官方通用 sign 算法)
+    raw_str = f"cdk={cdk}&fid={fid}&kid={kid}&time={time_str}"
+    return hashlib.md5(raw_str.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
     """呼叫官方 API 幫盟友兌換禮物碼"""
-    current_time = int(time.time())
+    current_time = str(int(time.time() * 1000)) # 毫秒級時間戳
+    
+    # 建立簽名
+    sign = generate_sign(player_id, kingdom, gift_code, current_time)
     
     payload = {
-        "fid": player_id,
-        "kid": kingdom,
-        "cdk": gift_code,
-        "time": str(current_time),
-        "sign": ""
+        "fid": str(player_id),
+        "kid": str(kingdom),
+        "cdk": str(gift_code),
+        "time": current_time,
+        "sign": sign
     }
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Origin": "https://ks-giftcode.centurygame.com",
         "Referer": "https://ks-giftcode.centurygame.com/",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
     }
     
     try:
         res = requests.post(REDEEM_API_URL, data=payload, headers=headers, timeout=10)
         result = res.json()
         
-        msg = result.get("msg", "未知結果")
         err_code = result.get("err_code", result.get("code", -1))
+        msg = result.get("msg", result.get("message", "未知結果"))
         
-        if err_code == 0 or "success" in msg.lower() or "成功" in msg:
-            return True, "兌換成功"
-        elif "already" in msg.lower() or "已領取" in msg:
-            return True, "重複領取 (已兌換過)"
+        if err_code == 0 or "success" in str(msg).lower() or "成功" in str(msg):
+            return True, "兌換成功！獎勵已發送至郵件"
+        elif "already" in str(msg).lower() or "已領取" in str(msg) or "claimed" in str(msg).lower():
+            return True, "重複領取 (之前已兌換過)"
+        elif "err_cdk" in str(msg).lower() or "invalid" in str(msg).lower():
+            return False, "禮物碼無效或已過期"
         else:
-            return False, f"失敗: {msg}"
+            return False, f"失敗 ({msg})"
             
     except Exception as e:
-        return False, f"請求異常: {str(e)}"
+        return False, f"請求失敗: {str(e)}"
 
 def send_discord_webhook(gift_code, results):
-    """將結果發送到 Discord Webhook 頻道"""
+    """發送兌換結果到 Discord Webhook"""
     print("正在傳送結果給 Discord...")
     
     success_count = sum(1 for r in results if r["status"])
@@ -120,7 +130,7 @@ def send_discord_webhook(gift_code, results):
         
     details_str = "\n".join(details)
     if len(details_str) > 3000:
-        details_str = details_str[:3000] + "\n...(訊息過長略過)"
+        details_str = details_str[:3000] + "\n...(筆數過多略過)"
         
     embed = {
         "title": "🎁 Kingshot 盟友禮物碼每日自動兌換報告",
@@ -141,7 +151,7 @@ def send_discord_webhook(gift_code, results):
     requests.post(DISCORD_WEBHOOK_URL, json=payload)
 
 def main():
-    # 1. 讀取 Google 試算表盟友資料 (先讀取試算表，避免試算表壞掉還執行無意義爬蟲)
+    # 1. 讀取 Google 試算表盟友資料
     players = get_players()
     print(f"👉 成功讀取 {len(players)} 位盟友資料")
 
@@ -149,10 +159,10 @@ def main():
     gift_code = get_latest_gift_code()
     print(f"👉 取得最新禮物碼：{gift_code}")
     
-    # 3. 逐一進行兌換
+    # 3. 逐一兌換
     results = []
     for p in players:
-        print(f"正在為 [{p['kingdom']}服] {p['name']} ({p['player_id']}) 兌換...")
+        print(f"正在為 [{p['kingdom']}服] {p['name']} (ID: {p['player_id']}) 兌換 {gift_code}...")
         status, msg = redeem_code(p['player_id'], p['kingdom'], gift_code)
         results.append({
             "name": p['name'],
@@ -160,9 +170,9 @@ def main():
             "status": status,
             "msg": msg
         })
-        time.sleep(1)
+        time.sleep(1) # 停頓 1 秒避免被伺服器限流
         
-    # 4. 發送 Discord 報告
+    # 4. 發送 Discord 通知
     send_discord_webhook(gift_code, results)
     print("🎉 任務執行完畢！")
 

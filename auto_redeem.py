@@ -40,7 +40,6 @@ def get_players():
     except Exception as e:
         print(f"❌ 試算表讀取失敗: {e}")
 
-    # 備用名單
     return [
         {"kingdom": "1641", "name": "Light", "player_id": "246147093"},
         {"kingdom": "1641", "name": "Pig", "player_id": "264788350"},
@@ -52,7 +51,7 @@ def get_players():
     ]
 
 def get_latest_gift_code():
-    """自動爬取最新禮包碼（加入嚴格篩選：必須大寫且包含英文字母與數字）"""
+    """自動爬取最新禮包碼（移除預設值，抓不到直接報錯）"""
     print("正在爬取最新禮物碼...")
     cache_buster = int(time.time())
     url = f"https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/?cb={cache_buster}"
@@ -68,14 +67,13 @@ def get_latest_gift_code():
             else:
                 active_part = text
                 
-            codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', active_part)
+            # 尋找所有 5 到 25 字元的大寫英數字組合（如 OFFICIALSTORE08011）
+            codes = re.findall(r'\b[A-Z0-9]{5,25}\b', active_part)
+            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS", "MARKDOWN", "CONTENT"}
             
             valid_codes = []
             for code in codes:
-                # 嚴格篩選：必須全大寫、且同時包含英文字母與數字（徹底排除 Title、Redeem 等一般單字）
-                has_letter = any(c.isalpha() for c in code)
-                has_digit = any(c.isdigit() for c in code)
-                if code.isupper() and has_letter and has_digit:
+                if code not in ignore_list and not code.isdigit():
                     if code not in valid_codes:
                         valid_codes.append(code)
             
@@ -87,7 +85,8 @@ def get_latest_gift_code():
     except Exception as e:
         print(f"⚠️ 爬取失敗: {e}")
         
-    return "KS0810"
+    # 💡 嚴格要求：抓不到就直接引發例外，絕不使用舊碼混淆
+    raise ValueError("❌ 無法自動抓取到最新的禮包碼！請檢查網站結構或稍後再試。")
 
 def redeem_with_browser(page, player_id, kingdom, gift_code):
     """執行瀏覽器自動兌換"""
@@ -122,7 +121,7 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
             return "failed", "❌ 禮包碼無效或已過期"
         else:
-            return "success", "✅ 兌換指令已送出"
+            return "failed", "❌ 禮包碼無效或伺服器未回應"
 
     except Exception as e:
         return "failed", f"❌ 網頁操作異常: {str(e)}"
@@ -157,7 +156,12 @@ def send_discord_webhook(gift_code, results):
         print(f"❌ Discord Webhook 發送失敗: {e}")
 
 def main():
-    gift_code = get_latest_gift_code()
+    try:
+        gift_code = get_latest_gift_code()
+    except Exception as e:
+        print(f"❌ {e}")
+        return
+
     players = get_players()
     print(f"👉 最終使用禮物碼：{gift_code}")
     

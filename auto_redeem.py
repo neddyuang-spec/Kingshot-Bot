@@ -11,7 +11,7 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKaw
 # Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
-# 免 Cloudflare 擋 IP 的官方 API 端點
+# 免 Cloudflare 封鎖的官方 API 端點
 REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 
 # 官方 API MD5 簽名金鑰
@@ -100,14 +100,14 @@ def calc_sign(params):
     return hashlib.md5(string_to_hash.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, gift_code):
-    """直接發送兌換請求（不需要 kid 欄位）"""
-    time_ms = str(int(time.time() * 1000))
+    """發送兌換請求（時間採用 10 位數秒）"""
+    # 關鍵修正：必須為 10 位數的 Unix 時間戳 (秒)
+    t_sec = str(int(time.time()))
     
-    # 精簡純淨參數，官方 sign 只計算這三個
     params = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
-        "time": time_ms
+        "time": t_sec
     }
     params["sign"] = calc_sign(params)
     
@@ -121,11 +121,9 @@ def redeem_code(player_id, gift_code):
     try:
         res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=12)
         
-        # 安全轉為 JSON，若非 JSON 格式則捕捉例外
         try:
             result = res.json()
         except Exception:
-            print(f"DEBUG 伺服器非 JSON 回應 [{player_id}]: HTTP {res.status_code} - {res.text[:100]}")
             return "failed", f"❌ 伺服器回應異常 (HTTP {res.status_code})"
             
         print(f"DEBUG 原始回應 [{player_id}]: {result}")
@@ -133,11 +131,16 @@ def redeem_code(player_id, gift_code):
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
         
-        if "Sign Error" in msg:
+        # 精確結果判定（優先檢測錯誤關鍵字）
+        if "time expired" in msg.lower():
+            return "failed", "❌ 時間戳記過期 (Time Expired)"
+        elif "sign error" in msg.lower():
             return "failed", "❌ 簽名錯誤 (Sign Error)"
+        elif "cdk expired" in msg.lower() or "cdk error" in msg.lower():
+            return "failed", "❌ 禮物碼無效或已過期"
         elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:
             return "claimed", "⚠️ 已重複領取過"
-        elif err_code == 0 or err_code == 1 or "success" in msg.lower() or "成功" in msg or "SUCCESS" in msg.upper():
+        elif "success" in msg.lower() or "成功" in msg or (result.get("code") == 1 and msg.upper() == "SUCCESS"):
             return "success", "✅ 兌換成功！"
         else:
             return "failed", f"❌ 失敗 ({msg})"

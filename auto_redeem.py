@@ -11,11 +11,10 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKaw
 # Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
-# Kingshot 官方 API 端點
-PLAYER_API_URL = "https://ks-giftcode.centurygame.com/api/player"
-REDEEM_API_URL = "https://ks-giftcode.centurygame.com/api/gift_code"
+# 免 Cloudflare 擋 IP 的官方 API 端點
+REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 
-# 官方簽名 Salt
+# 官方 API MD5 簽名金鑰
 SALT = "tB87#kPtkxqOS2"
 # ============================================
 
@@ -94,56 +93,42 @@ def get_latest_gift_code():
     return "KS0810"
 
 def calc_sign(params):
-    """Kingshot 官方標準 Sign 計算流程"""
-    # 按照字典序排序 key
+    """標準 Sign 計算：將 cdk, fid, time 字典序排列後拼上 SALT 算出 MD5"""
     sorted_keys = sorted(params.keys())
-    # 拼接 key=value&key2=value2...
     query_string = "&".join([f"{k}={params[k]}" for k in sorted_keys if k != "sign"])
-    # 加上 SALT 後計算 MD5
     string_to_hash = query_string + SALT
     return hashlib.md5(string_to_hash.encode('utf-8')).hexdigest()
 
-def redeem_code(player_id, kingdom, gift_code):
-    """完整的登入與兌換流程"""
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": "https://ks-giftcode.centurygame.com",
-        "Referer": "https://ks-giftcode.centurygame.com/"
-    }
-    session.headers.update(headers)
-    
-    # 1. 第一步：先驗證登入玩家
+def redeem_code(player_id, gift_code):
+    """直接發送兌換請求（不需要 kid 欄位）"""
     time_ms = str(int(time.time() * 1000))
-    player_params = {
+    
+    # 精簡純淨參數，官方 sign 只計算這三個
+    params = {
+        "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
         "time": time_ms
     }
-    player_params["sign"] = calc_sign(player_params)
+    params["sign"] = calc_sign(params)
     
-    try:
-        p_res = session.post(PLAYER_API_URL, data=player_params, timeout=10)
-        p_data = p_res.json()
-        if p_data.get("code") != 0 and p_data.get("err_code") != 0:
-            return "failed", f"❌ 帳號驗證失敗 ({p_data.get('msg', 'Sign Error')})"
-    except Exception as e:
-        return "failed", f"❌ 登入請求異常: {str(e)}"
-        
-    # 2. 第二步：發送禮物碼兌換
-    time_ms2 = str(int(time.time() * 1000))
-    redeem_params = {
-        "cdk": str(gift_code).strip(),
-        "fid": str(player_id).strip(),
-        "time": time_ms2
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://kingshot-giftcode.centurygame.com",
+        "Referer": "https://kingshot-giftcode.centurygame.com/"
     }
-    redeem_params["sign"] = calc_sign(redeem_params)
     
     try:
-        res = session.post(REDEEM_API_URL, data=redeem_params, timeout=10)
-        print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
-        result = res.json()
+        res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=12)
+        
+        # 安全轉為 JSON，若非 JSON 格式則捕捉例外
+        try:
+            result = res.json()
+        except Exception:
+            print(f"DEBUG 伺服器非 JSON 回應 [{player_id}]: HTTP {res.status_code} - {res.text[:100]}")
+            return "failed", f"❌ 伺服器回應異常 (HTTP {res.status_code})"
+            
+        print(f"DEBUG 原始回應 [{player_id}]: {result}")
         
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
@@ -152,13 +137,13 @@ def redeem_code(player_id, kingdom, gift_code):
             return "failed", "❌ 簽名錯誤 (Sign Error)"
         elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:
             return "claimed", "⚠️ 已重複領取過"
-        elif err_code == 0 or "success" in msg.lower() or "成功" in msg:
+        elif err_code == 0 or err_code == 1 or "success" in msg.lower() or "成功" in msg or "SUCCESS" in msg.upper():
             return "success", "✅ 兌換成功！"
         else:
             return "failed", f"❌ 失敗 ({msg})"
             
     except Exception as e:
-        return "failed", f"❌ 兌換請求異常: {str(e)}"
+        return "failed", f"❌ 請求發送失敗: {str(e)}"
 
 def send_discord_webhook(gift_code, results):
     """發送 Discord 報告"""
@@ -206,7 +191,7 @@ def main():
     if players:
         for p in players:
             print(f"正在為 [{p['kingdom']}服] {p['name']} (ID: {p['player_id']}) 兌換 {gift_code}...")
-            status, msg = redeem_code(p['player_id'], p['kingdom'], gift_code)
+            status, msg = redeem_code(p['player_id'], gift_code)
             results.append({
                 "name": p['name'],
                 "player_id": p['player_id'],

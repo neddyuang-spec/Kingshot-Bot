@@ -92,64 +92,79 @@ def get_latest_gift_code():
         
     return "KS0810"
 
-def calc_sign(params):
-    """將 cdk, fid, time 字典序排列後拼上 SALT 計算 MD5"""
-    sorted_keys = sorted(params.keys())
-    query_string = "&".join([f"{k}={params[k]}" for k in sorted_keys if k != "sign"])
-    string_to_hash = query_string + SALT
-    return hashlib.md5(string_to_hash.encode('utf-8')).hexdigest()
+def get_sign_variations(cdk, fid, kid, t_sec):
+    """產生可能匹配官方 API 的多種 Sign 計算方式"""
+    # 模式 A: 字典序 cdk, fid, kid, time 鍵值對 + SALT (全參)
+    p_all = {"cdk": cdk, "fid": fid, "kid": kid, "time": t_sec}
+    s_a = "&".join([f"{k}={p_all[k]}" for k in sorted(p_all.keys())]) + SALT
+    
+    # 模式 B: 字典序 cdk, fid, time 鍵值對 + SALT (不含 kid)
+    p_nokid = {"cdk": cdk, "fid": fid, "time": t_sec}
+    s_b = "&".join([f"{k}={p_nokid[k]}" for k in sorted(p_nokid.keys())]) + SALT
+
+    # 模式 C: 前置 SALT + 全參
+    s_c = SALT + "&".join([f"{k}={p_all[k]}" for k in sorted(p_all.keys())])
+
+    return [
+        hashlib.md5(s_a.encode('utf-8')).hexdigest(),
+        hashlib.md5(s_b.encode('utf-8')).hexdigest(),
+        hashlib.md5(s_c.encode('utf-8')).hexdigest()
+    ]
 
 def redeem_code(player_id, kingdom, gift_code):
-    """發送兌換請求"""
+    """發送兌換請求（自動重試不同 Sign 模式）"""
     t_sec = str(int(time.time()))
-    
-    # 官方 Sign 計算僅需 cdk, fid, time
-    params = {
-        "cdk": str(gift_code).strip(),
-        "fid": str(player_id).strip(),
-        "time": t_sec
-    }
-    params["sign"] = calc_sign(params)
-    
+    cdk = str(gift_code).strip()
+    fid = str(player_id).strip()
+    kid = str(kingdom).strip()
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Origin": "https://kingshot-giftcode.centurygame.com",
-        "Referer": "https://kingshot-giftcode.centurygame.com/"
+        "Referer": "https://kingshot-giftcode.centurygame.com/",
+        "Accept": "application/json, text/javascript, */*; q=0.01"
     }
-    
-    try:
-        res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=12)
-        
+
+    signs = get_sign_variations(cdk, fid, kid, t_sec)
+
+    for idx, sign in enumerate(signs):
+        params = {
+            "cdk": cdk,
+            "fid": fid,
+            "kid": kid,
+            "time": t_sec,
+            "sign": sign
+        }
+
         try:
-            result = res.json()
-        except Exception:
-            return "failed", f"❌ 伺服器回應異常 (HTTP {res.status_code})"
+            res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=12)
+            try:
+                result = res.json()
+            except Exception:
+                continue
+
+            print(f"DEBUG [模式 {idx+1}] 原始回應 [{fid}]: {result}")
             
-        print(f"DEBUG 原始回應 [{player_id}]: {result}")
-        
-        err_code = result.get("err_code", result.get("code", -1))
-        msg = str(result.get("msg", result.get("message", "未知結果")))
-        msg_lower = msg.lower()
-        
-        # 1. 優先判斷錯誤關鍵字（避免 msg 帶有 Sign Error 卻因 err_code 被誤判為成功）
-        if "sign error" in msg_lower:
-            return "failed", "❌ 簽名錯誤 (Sign Error)"
-        elif "time expired" in msg_lower:
-            return "failed", "❌ 時間戳記過期 (Time Expired)"
-        elif "cdk expired" in msg_lower or "cdk error" in msg_lower:
-            return "failed", f"❌ 禮物碼 `{gift_code}` 無效或已過期"
-        # 2. 判斷重複領取
-        elif "already" in msg_lower or "已領取" in msg or "claimed" in msg_lower or err_code == 20004 or err_code == 40008:
-            return "claimed", "⚠️ 您已領取過該禮物"
-        # 3. 最後才判定成功
-        elif "success" in msg_lower or "成功" in msg or (err_code == 0 and msg_lower == "success"):
-            return "success", "✅ 兌換成功！"
-        else:
-            return "failed", f"❌ 失敗 ({msg})"
-            
-    except Exception as e:
-        return "failed", f"❌ 請求發送失敗: {str(e)}"
+            err_code = result.get("err_code", result.get("code", -1))
+            msg = str(result.get("msg", result.get("message", "未知結果")))
+            msg_lower = msg.lower()
+
+            # 如果不再是 Sign Error，說明此 Sign 演算法正確！
+            if "sign error" not in msg_lower:
+                if "already" in msg_lower or "已領取" in msg or "claimed" in msg_lower or err_code in [20004, 40008]:
+                    return "claimed", "⚠️ 您已領取過該禮物"
+                elif "success" in msg_lower or "成功" in msg or err_code in [0, 1]:
+                    return "success", "✅ 兌換成功！"
+                elif "expired" in msg_lower or "error" in msg_lower:
+                    return "failed", f"❌ 禮物碼無效或過期 ({msg})"
+                else:
+                    return "failed", f"❌ 失敗 ({msg})"
+
+        except Exception as e:
+            print(f"模式 {idx+1} 發生異常: {e}")
+
+    return "failed", "❌ 簽名錯誤 (Sign Error)"
 
 def send_discord_webhook(gift_code, results):
     """發送 Discord 報告"""

@@ -50,42 +50,44 @@ def get_players():
         {"kingdom": "628", "name": "Handsome", "player_id": "347892324"}
     ]
 
-def get_latest_gift_code():
-    """自動爬取最新禮包碼（移除預設值，抓不到直接報錯）"""
-    print("正在爬取最新禮物碼...")
-    cache_buster = int(time.time())
-    url = f"https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/?cb={cache_buster}"
+def get_latest_gift_code(p):
+    """使用 Playwright 實際開啟網頁抓取最新禮包碼"""
+    print("正在使用瀏覽器爬取最新禮物碼...")
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+    page = browser.new_page()
     
     try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if res.status_code == 200:
-            text = res.text
-            if "Active codes" in text:
-                active_part = text.split("Active codes")[1]
-                if "Expired codes" in active_part:
-                    active_part = active_part.split("Expired codes")[0]
-            else:
-                active_part = text
-                
-            # 尋找所有 5 到 25 字元的大寫英數字組合（如 OFFICIALSTORE08011）
-            codes = re.findall(r'\b[A-Z0-9]{5,25}\b', active_part)
-            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS", "MARKDOWN", "CONTENT"}
-            
-            valid_codes = []
-            for code in codes:
-                if code not in ignore_list and not code.isdigit():
-                    if code not in valid_codes:
-                        valid_codes.append(code)
-            
-            print(f"👉 篩選後的有效禮包碼清單: {valid_codes}")
-            if valid_codes:
-                latest = valid_codes[0]
-                print(f"👉 決定使用最新禮包碼: {latest}")
-                return latest
+        page.goto("https://kingshotoptimizer.com/gift-codes/", timeout=30000)
+        page.wait_for_timeout(4000)  # 等待 JS 渲染完成
+        text = page.inner_text("body")
     except Exception as e:
-        print(f"⚠️ 爬取失敗: {e}")
+        browser.close()
+        raise ValueError(f"❌ 瀏覽器爬取網頁失敗: {e}")
         
-    # 💡 嚴格要求：抓不到就直接引發例外，絕不使用舊碼混淆
+    browser.close()
+    
+    if "Active codes" in text:
+        active_part = text.split("Active codes")[1]
+        if "Expired codes" in active_part:
+            active_part = active_part.split("Expired codes")[0]
+    else:
+        active_part = text
+        
+    codes = re.findall(r'\b[A-Z0-9]{5,25}\b', active_part)
+    ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS", "MARKDOWN", "CONTENT", "OPTIMIZER", "HOME", "GUIDES"}
+    
+    valid_codes = []
+    for code in codes:
+        if code not in ignore_list and not code.isdigit():
+            if code not in valid_codes:
+                valid_codes.append(code)
+    
+    print(f"👉 篩選後的有效禮包碼清單: {valid_codes}")
+    if valid_codes:
+        latest = valid_codes[0]
+        print(f"👉 決定使用最新禮包碼: {latest}")
+        return latest
+        
     raise ValueError("❌ 無法自動抓取到最新的禮包碼！請檢查網站結構或稍後再試。")
 
 def redeem_with_browser(page, player_id, kingdom, gift_code):
@@ -156,19 +158,19 @@ def send_discord_webhook(gift_code, results):
         print(f"❌ Discord Webhook 發送失敗: {e}")
 
 def main():
-    try:
-        gift_code = get_latest_gift_code()
-    except Exception as e:
-        print(f"❌ {e}")
-        return
-
     players = get_players()
-    print(f"👉 最終使用禮物碼：{gift_code}")
     
-    results = []
-    
-    if players:
-        with sync_playwright() as p:
+    with sync_playwright() as p:
+        try:
+            gift_code = get_latest_gift_code(p)
+        except Exception as e:
+            print(f"❌ {e}")
+            return
+
+        print(f"👉 最終使用禮物碼：{gift_code}")
+        results = []
+        
+        if players:
             browser = p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox"]
@@ -189,7 +191,7 @@ def main():
 
             browser.close()
 
-    send_discord_webhook(gift_code, results)
+        send_discord_webhook(gift_code, results)
     print("🎉 任務執行完畢！")
 
 if __name__ == "__main__":

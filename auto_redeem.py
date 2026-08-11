@@ -13,7 +13,7 @@ REDEEM_PAGE_URL = "https://kingshot-giftcode.centurygame.com/"
 def get_players():
     """讀取 Google 試算表中的盟友資料"""
     print("正在讀取盟友資料...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         res = requests.get(SHEET_CSV_URL, headers=headers, timeout=15)
         res.raise_for_status()
@@ -71,26 +71,30 @@ def get_latest_gift_code():
 def redeem_with_browser(page, player_id, kingdom, gift_code):
     """使用瀏覽器進行實體輸入與兌換"""
     try:
-        page.goto(REDEEM_PAGE_URL, timeout=30000)
-        page.wait_for_selector("input", timeout=10000)
+        page.goto(REDEEM_PAGE_URL, wait_until="domcontentloaded", timeout=30000)
+        
+        # 等待輸入框（最多等待 15 秒）
+        try:
+            page.wait_for_selector("input", timeout=15000)
+        except Exception:
+            title = page.title()
+            return "failed", f"❌ 載入失敗 (卡在頁面: '{title}')"
 
         inputs = page.locator("input")
         
-        # 1. 輸入角色 ID
+        # 1. 填入角色 ID
         inputs.nth(0).fill(str(player_id).strip())
-        # 2. 輸入服號
+        # 2. 填入服號
         inputs.nth(1).fill(str(kingdom).strip())
-        # 3. 輸入禮物碼
+        # 3. 填入禮物碼
         inputs.nth(2).fill(str(gift_code).strip())
 
-        # 點擊「確認兌換」按鈕
+        # 點擊「確認兌換」
         confirm_btn = page.locator("text=確認兌換")
         confirm_btn.click()
 
-        # 等待彈窗出現並取得文字
-        time.sleep(2)
+        time.sleep(2.5)
         
-        # 抓取彈窗訊息（通常在對話框內）
         body_text = page.inner_text("body")
         
         if "已領取" in body_text or "無法再次領取" in body_text:
@@ -100,11 +104,10 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         elif "無效" in body_text or "不存在" in body_text or "過期" in body_text:
             return "failed", f"❌ 禮物碼 `{gift_code}` 無效或已過期"
         else:
-            # 抓取彈窗的具體文字
-            return "failed", f"❌ 兌換結果未明 (網頁內容異動)"
+            return "failed", f"❌ 兌換失敗或回應異常"
 
     except Exception as e:
-        return "failed", f"❌ 網頁操作失敗: {str(e)}"
+        return "failed", f"❌ 網頁操作異常: {str(e)}"
 
 def send_discord_webhook(gift_code, results):
     """發送 Discord 報告"""
@@ -144,10 +147,23 @@ def main():
     
     if players:
         with sync_playwright() as p:
-            # 啟動無頭 Chromium 瀏覽器
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(viewport={"width": 1280, "height": 720})
+            # 啟動 Chromium 並注入防爬蟲偵測參數
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox"
+                ]
+            )
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720}
+            )
             page = context.new_page()
+            
+            # 隱藏自動化標記 (繞過 Cloudflare / Bot 檢測)
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             for p_info in players:
                 print(f"正在為 [{p_info['kingdom']}服] {p_info['name']} (ID: {p_info['player_id']}) 兌換 {gift_code}...")
@@ -158,7 +174,7 @@ def main():
                     "status": status,
                     "msg": msg
                 })
-                time.sleep(1)
+                time.sleep(1.5)
 
             browser.close()
 

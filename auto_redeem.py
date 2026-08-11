@@ -93,20 +93,20 @@ def get_latest_gift_code():
     return "KS0810"
 
 def calc_sign(params):
-    """將 cdk, fid, kid, time 依 key 字典序排列後拼上 SALT 計算 MD5"""
+    """將 cdk, fid, time 字典序排列後拼上 SALT 計算 MD5"""
     sorted_keys = sorted(params.keys())
     query_string = "&".join([f"{k}={params[k]}" for k in sorted_keys if k != "sign"])
     string_to_hash = query_string + SALT
     return hashlib.md5(string_to_hash.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
-    """發送兌換請求（包含 cdk, fid, kid, time）"""
+    """發送兌換請求"""
     t_sec = str(int(time.time()))
     
+    # 官方 Sign 計算僅需 cdk, fid, time
     params = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
-        "kid": str(kingdom).strip(),
         "time": t_sec
     }
     params["sign"] = calc_sign(params)
@@ -130,16 +130,21 @@ def redeem_code(player_id, kingdom, gift_code):
         
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
+        msg_lower = msg.lower()
         
-        # 精確回應判定
-        if "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or err_code == 20004 or err_code == 40008:
-            return "claimed", "⚠️ 您已領取過該禮物"
-        elif "success" in msg.lower() or "成功" in msg or err_code == 0 or err_code == 1:
-            return "success", "✅ 兌換成功！"
-        elif "sign error" in msg.lower():
+        # 1. 優先判斷錯誤關鍵字（避免 msg 帶有 Sign Error 卻因 err_code 被誤判為成功）
+        if "sign error" in msg_lower:
             return "failed", "❌ 簽名錯誤 (Sign Error)"
-        elif "time expired" in msg.lower():
-            return "failed", "❌ 時間戳記異常 (Time Expired)"
+        elif "time expired" in msg_lower:
+            return "failed", "❌ 時間戳記過期 (Time Expired)"
+        elif "cdk expired" in msg_lower or "cdk error" in msg_lower:
+            return "failed", f"❌ 禮物碼 `{gift_code}` 無效或已過期"
+        # 2. 判斷重複領取
+        elif "already" in msg_lower or "已領取" in msg or "claimed" in msg_lower or err_code == 20004 or err_code == 40008:
+            return "claimed", "⚠️ 您已領取過該禮物"
+        # 3. 最後才判定成功
+        elif "success" in msg_lower or "成功" in msg or (err_code == 0 and msg_lower == "success"):
+            return "success", "✅ 兌換成功！"
         else:
             return "failed", f"❌ 失敗 ({msg})"
             

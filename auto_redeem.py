@@ -5,11 +5,16 @@ import hashlib
 import requests
 
 # ================= 基礎設定 =================
+# Google 試算表 CSV 連結
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
+
+# Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
+PLAYER_API_URL = "https://ks-giftcode.centurygame.com/api/player"
 REDEEM_API_URL = "https://ks-giftcode.centurygame.com/api/gift_code"
-# Century Games 官方實際使用之 SALT 金鑰
+
+# 官方 API MD5 簽名金鑰
 SALT = "tB87#kPtkxqOS2"
 # ============================================
 
@@ -89,25 +94,13 @@ def get_latest_gift_code():
 
 def generate_sign(params):
     """依照官方 API 規則拼接 key=value + SALT 算出 MD5 簽名"""
-    # 排除 sign 本身並以 key 字母升序排序
     sorted_keys = sorted([k for k in params.keys() if k != "sign"])
     query_str = "&".join([f"{k}={params[k]}" for k in sorted_keys])
     sign_str = query_str + SALT
     return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
-    """呼叫官方 API 兌換禮物碼"""
-    current_time = str(int(time.time() * 1000))  # 官方使用毫秒級時間戳
-    
-    params = {
-        "cdk": str(gift_code).strip(),
-        "fid": str(player_id).strip(),
-        "kid": str(kingdom).strip(),
-        "time": current_time
-    }
-    
-    params["sign"] = generate_sign(params)
-    
+    """呼叫官方 API 兌換禮物碼 (含登入認證)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Origin": "https://ks-giftcode.centurygame.com",
@@ -116,15 +109,44 @@ def redeem_code(player_id, kingdom, gift_code):
         "X-Requested-With": "XMLHttpRequest"
     }
     
+    session = requests.Session()
+    session.headers.update(headers)
+
+    # 第一階段：驗證玩家身份
+    t1 = str(int(time.time() * 1000))
+    p_login = {"fid": str(player_id).strip(), "time": t1}
+    p_login["sign"] = generate_sign(p_login)
+    
     try:
-        res = requests.post(REDEEM_API_URL, data=params, headers=headers, timeout=10)
+        res_login = session.post(PLAYER_API_URL, data=p_login, timeout=10)
+        if res_login.status_code != 200:
+            return "failed", f"❌ 登入失敗 (HTTP {res_login.status_code})"
+    except Exception as e:
+        return "failed", f"❌ 登入連線失敗: {str(e)}"
+
+    # 第二階段：發送兌換請求
+    t2 = str(int(time.time() * 1000))
+    p_redeem = {
+        "cdk": str(gift_code).strip(),
+        "fid": str(player_id).strip(),
+        "kid": str(kingdom).strip(),
+        "time": t2
+    }
+    p_redeem["sign"] = generate_sign(p_redeem)
+    
+    try:
+        res = session.post(REDEEM_API_URL, data=p_redeem, timeout=10)
         print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
-        result = res.json()
         
+        # 安全解析 JSON（防止回傳非 JSON 文字導致崩潰）
+        try:
+            result = res.json()
+        except Exception:
+            return "failed", f"❌ 伺服器回應異常: {res.text[:100]}"
+            
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
         
-        # 精準狀態判斷
         if "Sign Error" in msg:
             return "failed", "❌ 簽名錯誤 (Sign Error)"
         elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:

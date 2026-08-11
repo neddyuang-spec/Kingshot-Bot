@@ -1,185 +1,67 @@
-import csv
-import io
+import os
 import time
+import hashlib
 import requests
-from playwright.sync_api import sync_playwright
 
-# ================= 基礎設定 =================
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
-REDEEM_PAGE_URL = "https://kingshot-giftcode.centurygame.com/"
-# ============================================
+# Century Games 通用 Salt (請填入你之前使用的 Salt，例如 tB87#kPtkxqOS2)
+SALT = os.getenv("KINGSHOT_SALT", "tB87#kPtkxqOS2") 
 
-def get_players():
-    """讀取 Google 試算表中的盟友資料"""
-    print("正在讀取盟友資料...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        res = requests.get(SHEET_CSV_URL, headers=headers, timeout=15)
-        res.raise_for_status()
-        
-        csv_text = res.content.decode('utf-8-sig')
-        reader = csv.DictReader(io.StringIO(csv_text))
-        
-        players = []
-        for row in reader:
-            row_lower = {str(k).strip().lower(): str(v).strip() for k, v in row.items() if k}
-            
-            kingdom = row_lower.get("kingdom") or row_lower.get("服號") or "1641"
-            name = row_lower.get("name") or row_lower.get("名字") or row_lower.get("player") or "盟友"
-            player_id = row_lower.get("playerid") or row_lower.get("player_id") or row_lower.get("id") or row_lower.get("玩家id")
-            
-            if player_id:
-                players.append({"kingdom": kingdom, "name": name, "player_id": player_id})
-        
-        if players:
-            print(f"👉 成功讀取 {len(players)} 位盟友資料")
-            return players
-    except Exception as e:
-        print(f"❌ 試算表讀取失敗: {e}")
+# 盟友名單 (根據 image_aa8a82.jpg 的截圖還原)
+PLAYERS = [
+    {"name": "Light", "fid": "246147093", "kid": "1641"},
+    {"name": "肥豬", "fid": "264788350", "kid": "1641"},
+    {"name": "Ogre", "fid": "279237769", "kid": "1641"},
+    {"name": "MiniLight", "fid": "306868384", "kid": "1641"},
+    {"name": "Hinoki", "fid": "265085587", "kid": "1641"},
+    {"name": "Flora", "fid": "327944637", "kid": "1641"},
+    {"name": "帥光光", "fid": "347892324", "kid": "628"},
+]
 
-    print("⚠️ 啟用備用盟友名單")
-    return [
-        {"kingdom": "1641", "name": "DasLight", "player_id": "246147093"},
-        {"kingdom": "1641", "name": "肥豬", "player_id": "264788350"},
-        {"kingdom": "1641", "name": "Ogre", "player_id": "279237769"},
-        {"kingdom": "1641", "name": "MiniLight", "player_id": "306868384"},
-        {"kingdom": "1641", "name": "HinokiMiller", "player_id": "265085587"},
-        {"kingdom": "1641", "name": "Flora", "player_id": "327944637"},
-        {"kingdom": "628", "name": "帥光光", "player_id": "347892324"}
-    ]
+def generate_sign(cdk, fid, kid, time_sec):
+    """
+    最新 MD5 簽名演算法：
+    必須完全按照 cdk -> fid -> kid -> time 的順序，加上 SALT
+    """
+    raw_str = f"cdk={cdk}&fid={fid}&kid={kid}&time={time_sec}"
+    sign_str = raw_str + SALT
+    return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
-def get_latest_gift_code():
-    """爬取最新禮物碼"""
-    print("正在爬取最新禮物碼...")
-    url = "https://r.jina.ai/https://kingshotoptimizer.com/gift-codes/"
-    try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if res.status_code == 200 and "Active codes" in res.text:
-            active_part = res.text.split("Active codes")[1].split("Expired codes")[0]
-            import re
-            codes = re.findall(r'\b[A-Za-z0-9]{5,15}\b', active_part)
-            ignore_list = {"ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", "GIFTS"}
-            for code in codes:
-                if code.upper() not in ignore_list and not code.isdigit():
-                    return code
-    except Exception as e:
-        print(f"⚠️ 爬取失敗: {e}")
-        
-    return "KS0810"
-
-def redeem_with_browser(page, player_id, kingdom, gift_code):
-    """使用瀏覽器進行實體輸入與兌換"""
-    try:
-        page.goto(REDEEM_PAGE_URL, wait_until="domcontentloaded", timeout=30000)
-        
-        # 等待輸入框（最多等待 15 秒）
-        try:
-            page.wait_for_selector("input", timeout=15000)
-        except Exception:
-            title = page.title()
-            return "failed", f"❌ 載入失敗 (卡在頁面: '{title}')"
-
-        inputs = page.locator("input")
-        
-        # 1. 填入角色 ID
-        inputs.nth(0).fill(str(player_id).strip())
-        # 2. 填入服號
-        inputs.nth(1).fill(str(kingdom).strip())
-        # 3. 填入禮物碼
-        inputs.nth(2).fill(str(gift_code).strip())
-
-        # 點擊「確認兌換」
-        confirm_btn = page.locator("text=確認兌換")
-        confirm_btn.click()
-
-        time.sleep(2.5)
-        
-        body_text = page.inner_text("body")
-        
-        if "已領取" in body_text or "無法再次領取" in body_text:
-            return "claimed", "⚠️ 您已領取過該禮物"
-        elif "成功" in body_text or "信件中領取" in body_text:
-            return "success", "✅ 兌換成功！"
-        elif "無效" in body_text or "不存在" in body_text or "過期" in body_text:
-            return "failed", f"❌ 禮物碼 `{gift_code}` 無效或已過期"
-        else:
-            return "failed", f"❌ 兌換失敗或回應異常"
-
-    except Exception as e:
-        return "failed", f"❌ 網頁操作異常: {str(e)}"
-
-def send_discord_webhook(gift_code, results):
-    """發送 Discord 報告"""
-    print("正在傳送結果給 Discord...")
+def redeem_gift_code(cdk, player):
+    url = "https://kingshot-giftcode.centurygame.com/api/gift_code"
+    time_sec = str(int(time.time())) # 關鍵：改用秒數
+    sign = generate_sign(cdk, player['fid'], player['kid'], time_sec)
     
-    success_count = sum(1 for r in results if r["status"] == "success")
-    claimed_count = sum(1 for r in results if r["status"] == "claimed")
-    fail_count = sum(1 for r in results if r["status"] == "failed")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://ks-giftcode.centurygame.com",
+        "Referer": "https://ks-giftcode.centurygame.com/",
+        "Accept": "application/json, text/plain, */*"
+    }
     
-    details = [f"**{r['name']}** (`{r['player_id']}`) - {r['msg']}" for r in results]
-    details_str = "\n".join(details)
-    if len(details_str) > 3000:
-        details_str = details_str[:3000] + "\n...(筆數過多略過)"
-        
-    embed = {
-        "title": "🎁 Kingshot 盟友禮物碼每日自動兌換報告",
-        "color": 3066993 if fail_count == 0 else 15158332,
-        "fields": [
-            {"name": "最新禮物碼", "value": f"`{gift_code}`", "inline": True},
-            {"name": "兌換統計", "value": f"成功: **{success_count}** 人\n重複領取: **{claimed_count}** 人\n失敗: **{fail_count}** 人", "inline": True},
-            {"name": "詳細兌換清單", "value": details_str or "無資料", "inline": False}
-        ],
-        "footer": {"text": "自動化排程任務 • 每日 20:00 執行"}
+    data = {
+        "cdk": cdk,
+        "fid": player['fid'],
+        "kid": player['kid'],
+        "time": time_sec,
+        "sign": sign
     }
     
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"username": "Kingshot 兌換小幫手", "embeds": [embed]}, timeout=10)
+        response = requests.post(url, headers=headers, data=data, timeout=10)
+        return response.json()
     except Exception as e:
-        print(f"❌ Discord Webhook 發送失敗: {e}")
+        return {"code": -1, "msg": f"請求失敗: {str(e)}"}
 
 def main():
-    players = get_players()
-    gift_code = get_latest_gift_code()
-    print(f"👉 取得最新禮物碼：{gift_code}")
+    cdk = "KS0810" 
+    print(f"👉 取得最新禮物碼：{cdk}")
     
-    results = []
-    
-    if players:
-        with sync_playwright() as p:
-            # 啟動 Chromium 並注入防爬蟲偵測參數
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox"
-                ]
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 720}
-            )
-            page = context.new_page()
-            
-            # 隱藏自動化標記 (繞過 Cloudflare / Bot 檢測)
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            for p_info in players:
-                print(f"正在為 [{p_info['kingdom']}服] {p_info['name']} (ID: {p_info['player_id']}) 兌換 {gift_code}...")
-                status, msg = redeem_with_browser(page, p_info['player_id'], p_info['kingdom'], gift_code)
-                results.append({
-                    "name": p_info['name'],
-                    "player_id": p_info['player_id'],
-                    "status": status,
-                    "msg": msg
-                })
-                time.sleep(1.5)
-
-            browser.close()
-
-    send_discord_webhook(gift_code, results)
-    print("🎉 任務執行完畢！")
+    for p in PLAYERS:
+        print(f"正在為 [{p['kid']}服] {p['name']} (ID: {p['fid']}) 兌換 {cdk}...")
+        res = redeem_gift_code(cdk, p)
+        print(f"回應結果: {res}")
+        time.sleep(1.5) # 避免請求過快被阻擋，加入短暫延遲
 
 if __name__ == "__main__":
     main()

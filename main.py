@@ -72,11 +72,26 @@ def redeem_code(player_id, code):
     }
     
     try:
-        response = requests.post(REDEEM_API_URL, data=payload, headers=HEADERS, timeout=10)
-        res_json = response.json()
-        return res_json.get("msg", "兌換完成")
-    except Exception as e:
-        return f"請求失敗: {e}"
+    res = requests.post(
+        KINGSHOT_REDEEM_API, json=payload, headers=headers, timeout=10
+    )
+
+    # 嘗試解析 JSON 回應
+    try:
+        result = res.json()
+        if res.status_code == 200 and result.get("code") == 200:
+            report_messages.append(f"• **{name}** (`{pid}`): ✅ 成功")
+        else:
+            msg = result.get("msg", "已領取過或無效")
+            report_messages.append(f"• **{name}** (`{pid}`): ⚠️ {msg}")
+    except Exception:
+        # 如果官方回傳的不是 JSON (例如 404 網址錯誤或 403 被防火牆擋)
+        report_messages.append(
+            f"• **{name}** (`{pid}`): ❌ 網址/API 錯誤 (HTTP {res.status_code})"
+        )
+
+except Exception as e:
+    report_messages.append(f"• **{name}** (`{pid}`): ❌ 連線失敗")
 
 def send_discord_notify(message):
     """ 發送結果通知至 Discord Webhook """

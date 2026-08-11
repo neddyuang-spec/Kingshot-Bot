@@ -1,16 +1,13 @@
-name: Kingshot Auto Redeem Daily
+name: 每日自動兌換 Kingshot 禮物碼
 
 on:
   schedule:
-    # cron 格式: 分 時 日 月 週 (UTC 時間)
-    # 台灣時間 20:00 (UTC+8) = UTC 時間 12:00
-    - cron: '0 12 * * *'
-  workflow_dispatch: # 允許在 GitHub 上隨時點擊按鈕手動觸發測試
+    - cron: '0 12 * * *' # 每日排程
+  workflow_dispatch:     # 支援手動觸發按鈕
 
 jobs:
   redeem:
     runs-on: ubuntu-latest
-
     steps:
       - name: 檢出專案碼
         uses: actions/checkout@v3
@@ -20,10 +17,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 安裝套件
+      - name: 安裝套件與 Playwright 瀏覽器
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install requests playwright
+          playwright install chromium
+          playwright install-deps
 
       - name: 執行自動兌換腳本
-        run: |
-          python auto_redeem.py
+        run: python auto_redeem.py

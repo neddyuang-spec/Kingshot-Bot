@@ -13,11 +13,10 @@ PLAYERS = [
 ]
 
 REDEEM_PAGE_URL = "https://ks-giftcode.centurygame.com/"
-CDK = "KS0810"  # 後續可以改成動態抓取最新禮物碼
+CDK = "KS0810"
 
 def main():
     with sync_playwright() as p:
-        # 雲端執行必須設定 headless=True
         browser = p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox"]
@@ -36,14 +35,21 @@ def main():
                 inputs.nth(1).fill(player['kid'])
                 inputs.nth(2).fill(CDK)
 
-                page.locator("text=確認兌換").click()
-                
-                time.sleep(2)
+                # 💡 改用更安全的方式點擊按鈕（嘗試點擊頁面上的按鈕或包含「兑换 / Confirm / 确认」的元素）
+                # 這裡尋找頁面中的 button 或是有送出性質的點擊目標
+                try:
+                    # 先試著找常見的按鈕標籤
+                    page.locator("button, .btn, [type='submit']").first.click()
+                except:
+                    # 如果找不到，改用模糊文字匹配（支援簡體或英文）
+                    page.locator("text=/确认|兌換|Confirm|Redeem/i").first.click()
+
+                time.sleep(2.5)
                 body_text = page.inner_text("body")
                 
-                if "已領取" in body_text or "無法再次領取" in body_text:
+                if "已領取" in body_text or "无法再次领取" in body_text or "重複領取" in body_text:
                     print("👉 結果：已經領取過該禮物")
-                elif "成功" in body_text or "信件" in body_text:
+                elif "成功" in body_text or "成功领取" in body_text or "信件" in body_text:
                     print("👉 結果：兌換成功！")
                 else:
                     print("👉 結果：已送出指令")

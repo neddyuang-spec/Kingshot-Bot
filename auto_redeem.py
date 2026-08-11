@@ -61,7 +61,7 @@ def get_players():
         {"kingdom": "1641", "name": "MiniLight", "player_id": "306868384"},
         {"kingdom": "1641", "name": "HinokiMiller", "player_id": "265085587"},
         {"kingdom": "1641", "name": "Flora", "player_id": "327944637"},
-        {"kingdom": "1641", "name": "帥光光", "player_id": "347892324"}
+        {"kingdom": "628", "name": "帥光光", "player_id": "347892324"}
     ]
 
 def get_latest_gift_code():
@@ -93,20 +93,20 @@ def get_latest_gift_code():
     return "KS0810"
 
 def calc_sign(params):
-    """標準 Sign 計算：將 cdk, fid, time 字典序排列後拼上 SALT 算出 MD5"""
+    """將 cdk, fid, kid, time 依 key 字典序排列後拼上 SALT 計算 MD5"""
     sorted_keys = sorted(params.keys())
     query_string = "&".join([f"{k}={params[k]}" for k in sorted_keys if k != "sign"])
     string_to_hash = query_string + SALT
     return hashlib.md5(string_to_hash.encode('utf-8')).hexdigest()
 
-def redeem_code(player_id, gift_code):
-    """發送兌換請求（時間採用 10 位數秒）"""
-    # 關鍵修正：必須為 10 位數的 Unix 時間戳 (秒)
+def redeem_code(player_id, kingdom, gift_code):
+    """發送兌換請求（包含 cdk, fid, kid, time）"""
     t_sec = str(int(time.time()))
     
     params = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
+        "kid": str(kingdom).strip(),
         "time": t_sec
     }
     params["sign"] = calc_sign(params)
@@ -131,17 +131,15 @@ def redeem_code(player_id, gift_code):
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
         
-        # 精確結果判定（優先檢測錯誤關鍵字）
-        if "time expired" in msg.lower():
-            return "failed", "❌ 時間戳記過期 (Time Expired)"
+        # 精確回應判定
+        if "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or err_code == 20004 or err_code == 40008:
+            return "claimed", "⚠️ 您已領取過該禮物"
+        elif "success" in msg.lower() or "成功" in msg or err_code == 0 or err_code == 1:
+            return "success", "✅ 兌換成功！"
         elif "sign error" in msg.lower():
             return "failed", "❌ 簽名錯誤 (Sign Error)"
-        elif "cdk expired" in msg.lower() or "cdk error" in msg.lower():
-            return "failed", "❌ 禮物碼無效或已過期"
-        elif err_code == 20004 or "already" in msg.lower() or "已領取" in msg or "claimed" in msg.lower() or "40008" in msg:
-            return "claimed", "⚠️ 已重複領取過"
-        elif "success" in msg.lower() or "成功" in msg or (result.get("code") == 1 and msg.upper() == "SUCCESS"):
-            return "success", "✅ 兌換成功！"
+        elif "time expired" in msg.lower():
+            return "failed", "❌ 時間戳記異常 (Time Expired)"
         else:
             return "failed", f"❌ 失敗 ({msg})"
             
@@ -194,7 +192,7 @@ def main():
     if players:
         for p in players:
             print(f"正在為 [{p['kingdom']}服] {p['name']} (ID: {p['player_id']}) 兌換 {gift_code}...")
-            status, msg = redeem_code(p['player_id'], gift_code)
+            status, msg = redeem_code(p['player_id'], p['kingdom'], gift_code)
             results.append({
                 "name": p['name'],
                 "player_id": p['player_id'],

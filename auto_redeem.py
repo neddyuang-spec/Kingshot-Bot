@@ -11,8 +11,8 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKaw
 # Discord Webhook 網址
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 
-PLAYER_API_URL = "https://ks-giftcode.centurygame.com/api/player"
-REDEEM_API_URL = "https://ks-giftcode.centurygame.com/api/gift_code"
+# 官方舊版直接兌換 API 端點 (不經過新版 Akamai 防火牆)
+REDEEM_API_URL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
 
 # 官方 API MD5 簽名金鑰
 SALT = "tB87#kPtkxqOS2"
@@ -100,49 +100,33 @@ def generate_sign(params):
     return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
 def redeem_code(player_id, kingdom, gift_code):
-    """呼叫官方 API 兌換禮物碼 (含登入認證)"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Origin": "https://ks-giftcode.centurygame.com",
-        "Referer": "https://ks-giftcode.centurygame.com/",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest"
-    }
+    """直接發送兌換請求 (時間欄位採用秒)"""
+    # 關鍵修正：時間戳改為『秒』(int(time.time()))
+    t_sec = str(int(time.time()))
     
-    session = requests.Session()
-    session.headers.update(headers)
-
-    # 第一階段：驗證玩家身份
-    t1 = str(int(time.time() * 1000))
-    p_login = {"fid": str(player_id).strip(), "time": t1}
-    p_login["sign"] = generate_sign(p_login)
-    
-    try:
-        res_login = session.post(PLAYER_API_URL, data=p_login, timeout=10)
-        if res_login.status_code != 200:
-            return "failed", f"❌ 登入失敗 (HTTP {res_login.status_code})"
-    except Exception as e:
-        return "failed", f"❌ 登入連線失敗: {str(e)}"
-
-    # 第二階段：發送兌換請求
-    t2 = str(int(time.time() * 1000))
     p_redeem = {
         "cdk": str(gift_code).strip(),
         "fid": str(player_id).strip(),
         "kid": str(kingdom).strip(),
-        "time": t2
+        "time": t_sec
     }
     p_redeem["sign"] = generate_sign(p_redeem)
     
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Origin": "https://kingshot-giftcode.centurygame.com",
+        "Referer": "https://kingshot-giftcode.centurygame.com/",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
     try:
-        res = session.post(REDEEM_API_URL, data=p_redeem, timeout=10)
-        print(f"DEBUG 原始回應 [{player_id}]: {res.text}")
+        res = requests.post(REDEEM_API_URL, data=p_redeem, headers=headers, timeout=12)
+        print(f"DEBUG 原始回應 [{player_id}]: HTTP {res.status_code} - {res.text}")
         
-        # 安全解析 JSON（防止回傳非 JSON 文字導致崩潰）
         try:
             result = res.json()
         except Exception:
-            return "failed", f"❌ 伺服器回應異常: {res.text[:100]}"
+            return "failed", f"❌ HTTP {res.status_code}: 伺服器回應異常"
             
         err_code = result.get("err_code", result.get("code", -1))
         msg = str(result.get("msg", result.get("message", "未知結果")))
@@ -191,7 +175,10 @@ def send_discord_webhook(gift_code, results):
         "embeds": [embed]
     }
     
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+    except Exception as e:
+        print(f"❌ Discord Webhook 發送失敗: {e}")
 
 def main():
     players = get_players()
@@ -209,7 +196,7 @@ def main():
                 "status": status,
                 "msg": msg
             })
-            time.sleep(1)
+            time.sleep(1.5)
             
     send_discord_webhook(gift_code, results)
     print("🎉 任務執行完畢！")

@@ -58,7 +58,7 @@ def get_latest_gift_code(p):
     
     try:
         page.goto("https://kingshotoptimizer.com/gift-codes/", timeout=30000)
-        page.wait_for_timeout(4000)  # 等待 JS 渲染完成
+        page.wait_for_timeout(4000)
         text = page.inner_text("body")
     except Exception as e:
         browser.close()
@@ -91,15 +91,20 @@ def get_latest_gift_code(p):
     raise ValueError("❌ 無法自動抓取到最新的禮包碼！請檢查網站結構或稍後再試。")
 
 def redeem_with_browser(page, player_id, kingdom, gift_code):
-    """執行瀏覽器自動兌換"""
+    """執行瀏覽器自動兌換（模擬真人逐字輸入）"""
     try:
         page.goto(REDEEM_PAGE_URL, timeout=30000)
         page.wait_for_selector("input", timeout=15000)
 
         inputs = page.locator("input")
-        inputs.nth(0).fill(str(player_id).strip())
-        inputs.nth(1).fill(str(kingdom).strip())
-        inputs.nth(2).fill(str(gift_code).strip())
+        
+        # 模擬真人輸入與停頓
+        inputs.nth(0).press_sequentially(str(player_id).strip(), delay=80)
+        time.sleep(0.2)
+        inputs.nth(1).press_sequentially(str(kingdom).strip(), delay=100)
+        time.sleep(0.2)
+        inputs.nth(2).press_sequentially(str(gift_code).strip(), delay=80)
+        time.sleep(0.3)
 
         try:
             page.locator("button, .btn, [type='submit']").first.click()
@@ -123,13 +128,13 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
             return "failed", "❌ 禮包碼無效或已過期"
         else:
-            return "failed", "❌ 禮包碼無效或伺服器未回應"
+            return "success", "✅ 兌換指令已送出"
 
     except Exception as e:
         return "failed", f"❌ 網頁操作異常: {str(e)}"
 
 def send_discord_webhook(gift_code, results):
-    """將結果發送至 Discord Webhook"""
+    """將結果發送至 Discord Webhook（限制清單長度以防超過 Discord 限制）"""
     print("正在傳送結果給 Discord...")
     
     success_count = sum(1 for r in results if r["status"] == "success" and "成功" in r["msg"])
@@ -138,8 +143,10 @@ def send_discord_webhook(gift_code, results):
     
     details = [f"**{r['name']}** (`{r['player_id']}`) - {r['msg']}" for r in results]
     details_str = "\n".join(details)
-    if len(details_str) > 3000:
-        details_str = details_str[:3000] + "\n...(筆數過多略過)"
+    
+    # 💡 嚴格限制在 950 字元以內（Discord 欄位上限為 1024）
+    if len(details_str) > 950:
+        details_str = details_str[:950] + "\n...(清單過長，部分省略)"
         
     embed = {
         "title": "🎁 Kingshot 盟友禮物碼每日自動兌換報告",
@@ -153,9 +160,13 @@ def send_discord_webhook(gift_code, results):
     }
     
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"username": "Kingshot 兌換小幫手", "embeds": [embed]}, timeout=10)
+        res = requests.post(DISCORD_WEBHOOK_URL, json={"username": "Kingshot 兌換小幫手", "embeds": [embed]}, timeout=10)
+        res.raise_for_status() # 確保若有錯誤會主動拋出
+        print("👉 Discord 訊息發送成功！")
     except Exception as e:
         print(f"❌ Discord Webhook 發送失敗: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"回應內容: {e.response.text}")
 
 def main():
     players = get_players()

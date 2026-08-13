@@ -10,7 +10,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 # ================= 參數設定 =================
-# 正確的 Google 試算表 CSV 網址（已確認零與英文大小寫）
+# 正確的 Google 試算表 CSV 網址（已確認 0 與 O 正確）
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 REDEEM_PAGE_URL = "https://ks-giftcode.centurygame.com/"
@@ -225,7 +225,6 @@ def send_discord_webhook(gift_codes_list, results):
     print("正在傳送完整結果給 Discord...", flush=True)
     
     success_count = sum(1 for r in results if r["status"] == "success" and "成功" in r["msg"])
-    # 同時計算「網頁偵測已領過」與「歷史紀錄略過」的人數
     claimed_count = sum(1 for r in results if r["status"] == "claimed" or "略過" in r["msg"])
     fail_count = sum(1 for r in results if r["status"] == "failed" and "略過" not in r["msg"])
     
@@ -327,6 +326,9 @@ def main():
 
     send_discord_webhook(gift_codes, results)
     print("🎉 任務執行完畢！", flush=True)
+
+if __name__ == "min":
+    pass
 
 if __name__ == "__main__":
     main()

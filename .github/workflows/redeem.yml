@@ -2,7 +2,7 @@ name: Kingshot 自動兌換與回報
 
 on:
   schedule:
-    - cron: '30 17 * * *' # 每天中午 12 點執行 (UTC)
+    - cron: '11 9 * * *' # (UTC)
   workflow_dispatch:     # 支援手動觸發
 
 jobs:

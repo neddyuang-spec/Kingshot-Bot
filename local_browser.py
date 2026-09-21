@@ -63,7 +63,18 @@ def get_players():
                 })
         
         if players:
-            print(f"👉 成功讀取 {len(players)} 位盟友資料", flush=True)
+            seen_ids = set()
+            deduped_players = []
+            for pl in players:
+                if pl["player_id"] not in seen_ids:
+                    seen_ids.add(pl["player_id"])
+                    deduped_players.append(pl)
+            removed = len(players) - len(deduped_players)
+            players = deduped_players
+            if removed > 0:
+                print(f"👉 成功讀取 {len(players)} 位盟友資料（已去除 {removed} 筆重複 ID）", flush=True)
+            else:
+                print(f"👉 成功讀取 {len(players)} 位盟友資料", flush=True)
             return players
     except Exception as e:
         print(f"❌ 試算表讀取失敗: {e}", flush=True)
@@ -106,7 +117,7 @@ def get_all_gift_codes():
         extract_codes(data)
         
         if not codes:
-            codes = re.findall(r'\b[A-Z0-9]{5,25}\b', res.text)
+            codes = re.findall(r'\b[A-Za-z0-9]{5,25}\b', res.text)
             
         ignore_list = {
             "ACTIVE", "EXPIRED", "COPY", "SOURCE", "VERIFIED", "ADDED", 
@@ -115,12 +126,15 @@ def get_all_gift_codes():
         }
         
         valid_codes = []
+        seen_upper = set()
         for code in codes:
-            code_str = str(code).strip().upper()
-            if code_str not in ignore_list and not code_str.isdigit() and len(code_str) >= 5:
-                if re.match(r'^[A-Z0-9\-_]+$', code_str):
-                    if code_str not in valid_codes:
-                        valid_codes.append(code_str)
+            original = str(code).strip()
+            code_upper = original.upper()  # 僅用來做比對與去重，不影響實際送出的碼
+            if code_upper not in ignore_list and not code_upper.isdigit() and len(code_upper) >= 5:
+                if re.match(r'^[A-Z0-9\-_]+$', code_upper):
+                    if code_upper not in seen_upper:
+                        seen_upper.add(code_upper)
+                        valid_codes.append(original)  # 保留原始大小寫
                         
         print(f"👉 篩選後的有效禮包碼清單: {valid_codes}", flush=True)
         if valid_codes:
@@ -164,45 +178,90 @@ def human_type(locator, text):
         locator.press(char)
         time.sleep(random.uniform(0.07, 0.22))
 
-def redeem_with_browser(page, player_id, kingdom, gift_code):
+def close_result_modal(page):
+    """嘗試關閉兌換結果彈窗，避免殘留視窗擋住下一次操作（找不到就略過，不影響流程）"""
     try:
-        page.goto(REDEEM_PAGE_URL, timeout=30000)
-        page.wait_for_selector("input", timeout=15000)
-
-        inputs = page.locator("input")
-        
-        human_type(inputs.nth(0), str(player_id).strip())
-        time.sleep(random.uniform(0.2, 0.5))
-        
-        human_type(inputs.nth(1), str(kingdom).strip())
-        time.sleep(random.uniform(0.2, 0.5))
-        
-        human_type(inputs.nth(2), str(gift_code).strip())
+        page.locator("text=/確定|确定|OK|Confirm/i").first.click(timeout=2000)
         time.sleep(random.uniform(0.3, 0.6))
+    except Exception:
+        pass
+
+def redeem_with_browser(page, player_id, kingdom, gift_code, reuse_page=False):
+    """
+    對單一玩家 + 單一禮包碼執行兌換。
+    reuse_page=True 時，假設目前頁面已經在兌換頁且 ID/王國欄位已經填好，
+    只重新填寫禮包碼欄位並送出，藉此省下整頁重載的時間；
+    若重填失敗，會自動退回整頁重新載入再試一次，不會卡住。
+    """
+    try:
+        filled_via_reuse = False
+        if reuse_page:
+            try:
+                inputs = page.locator("input")
+                inputs.nth(2).fill("")
+                human_type(inputs.nth(2), str(gift_code).strip())
+                time.sleep(random.uniform(0.3, 0.6))
+                filled_via_reuse = True
+            except Exception:
+                filled_via_reuse = False
+
+        if not filled_via_reuse:
+            page.goto(REDEEM_PAGE_URL, timeout=30000)
+            page.wait_for_selector("input", timeout=15000)
+
+            inputs = page.locator("input")
+
+            human_type(inputs.nth(0), str(player_id).strip())
+            time.sleep(random.uniform(0.2, 0.5))
+
+            human_type(inputs.nth(1), str(kingdom).strip())
+            time.sleep(random.uniform(0.2, 0.5))
+
+            human_type(inputs.nth(2), str(gift_code).strip())
+            time.sleep(random.uniform(0.3, 0.6))
 
         try:
             page.locator("button, .btn, [type='submit']").first.click()
         except:
             page.locator("text=/确认|兌換|Confirm|Redeem/i").first.click()
 
-        time.sleep(6.0)
-        
-        full_text = page.content()
+        # 主動等待畫面跳出已知的結果文字，而不是固定睡 6 秒用猜的
+        result_phrases = [
+            "兌換成功", "兑换成功",
+            "已經領取過", "已经领取过", "已領取", "已领取", "重複領取", "重复领取",
+            "無法再次領取", "无法再次领取",
+            "兌換碼不存在", "兑换码不存在", "禮包碼不存在", "礼包码不存在",
+            "無效", "无效", "過期", "过期",
+            "invalid", "expired", "already", "success",
+        ]
         try:
-            toast_elements = page.locator(".el-message, .toast, .alert, .modal, [class*='message'], [class*='toast'], [role='alert'], div").all_inner_texts()
-            if toast_elements:
-                full_text += " " + " ".join(toast_elements)
-        except:
-            pass
+            page.wait_for_function(
+                "(phrases) => phrases.some(p => document.body.innerText.includes(p))",
+                arg=result_phrases,
+                timeout=10000
+            )
+        except Exception:
+            pass  # 沒等到已知文字也繼續往下走，用當下畫面實際文字判斷
 
-        if any(word in full_text for word in ["已领取", "已領取", "重复领取", "重複領取", "same gift", "already"]):
-            return "claimed", "⚠️ 已經領取過該禮物"
-        elif any(word in full_text for word in ["成功", "success", "Successfully"]):
-            return "success", "✅ 兌換成功！"
-        elif any(word in full_text for word in ["无效", "無效", "过期", "過期", "不存在", "invalid", "expired"]):
-            return "failed", "❌ 禮包碼無效或已過期"
+        # 只讀「畫面上實際顯示的文字」(inner_text)，不要用整包 HTML 原始碼(含隱藏的 script/樣式)去猜
+        visible_text = page.inner_text("body")
+
+        if any(word in visible_text for word in ["兌換碼不存在", "兑换码不存在", "禮包碼不存在", "礼包码不存在"]):
+            status, msg = "failed", "❌ 兌換碼不存在，請檢查大小寫是否正確"
+        elif any(word in visible_text for word in ["已經領取過", "已经领取过", "已領取", "已领取", "重複領取", "重复领取", "無法再次領取", "无法再次领取", "already"]):
+            status, msg = "claimed", "⚠️ 已經領取過該禮物"
+        elif any(word in visible_text for word in ["兌換成功", "兑换成功"]):
+            status, msg = "success", "✅ 兌換成功，請在信件中領取獎勵"
+        elif any(word in visible_text for word in ["無效", "无效", "過期", "过期", "invalid", "expired"]):
+            status, msg = "failed", "❌ 禮包碼無效或已過期"
         else:
-            return "success", "✅ 兌換指令已送出"
+            # 沒對到任何已知訊息時，直接回報畫面上實際看到的文字，不要自行猜測成功或失敗
+            snippet = visible_text.strip().replace("\n", " ")
+            snippet = re.sub(r"\s+", " ", snippet)[:150]
+            status, msg = "unknown", f"❓ 無法辨識結果，實際頁面文字: {snippet}"
+
+        close_result_modal(page)
+        return status, msg
 
     except Exception as e:
         return "failed", f"❌ 網頁操作異常: {str(e)}"
@@ -214,6 +273,7 @@ def send_discord_webhook(gift_codes_list, results):
     success_count = sum(1 for r in results if r["status"] == "success" and "成功" in r["msg"])
     claimed_count = sum(1 for r in results if r["status"] == "claimed" or "略過" in r["msg"])
     fail_count = sum(1 for r in results if r["status"] == "failed" and "略過" not in r["msg"])
+    unknown_count = sum(1 for r in results if r["status"] == "unknown")
     
     # 將名單切成每組最多 8 筆，確保單個 Field 長度不超過 Discord 1024 字元限制
     chunk_size = 8
@@ -246,7 +306,7 @@ def send_discord_webhook(gift_codes_list, results):
         
         if idx == 0:
             embed["fields"].append({"name": "本次檢查禮物碼", "value": codes_str or "無", "inline": False})
-            embed["fields"].append({"name": "兌換統計", "value": f"成功執行: **{success_count}** 人\n略過/已領過: **{claimed_count}** 人\n失敗: **{fail_count}** 人", "inline": True})
+            embed["fields"].append({"name": "兌換統計", "value": f"成功執行: **{success_count}** 人\n略過/已領過: **{claimed_count}** 人\n失敗: **{fail_count}** 人\n無法辨識: **{unknown_count}** 人", "inline": True})
         
         embed["fields"].append({
             "name": f"詳細兌換清單 (第 {idx + 1} 部分)",
@@ -294,53 +354,62 @@ def main():
 
     print(f"👉 最終使用的禮物碼清單：{gift_codes}", flush=True)
     results = []
-    
-    if players:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"]
-            )
-            context = browser.new_context(viewport={"width": 1280, "height": 720})
-            page = context.new_page()
 
-            for p_info in players:
-                p_id = p_info['player_id']
-                p_name = p_info['name']
-                p_kingdom = p_info['kingdom']
+    try:
+        if players:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"]
+                )
+                context = browser.new_context(viewport={"width": 1280, "height": 720})
+                page = context.new_page()
 
-                for gift_code in gift_codes:
-                    if is_player_redeemed(gift_code, p_id):
-                        msg = "⏩ 本次略過 (先前已領過)"
-                        print(f"[{p_kingdom}服] {p_name} 已經領過 {gift_code}，本次略過", flush=True)
-                        results.append({
-                            "name": p_name,
-                            "player_id": p_id,
-                            "gift_code": gift_code,
-                            "status": "claimed",
-                            "msg": msg
-                        })
-                        continue
+                try:
+                    for p_info in players:
+                        p_id = p_info['player_id']
+                        p_name = p_info['name']
+                        p_kingdom = p_info['kingdom']
 
-                    print(f"正在為 [{p_kingdom}服] {p_name} (ID: {p_id}) 兌換 {gift_code}...", flush=True)
-                    status, msg = redeem_with_browser(page, p_id, p_kingdom, gift_code)
-                    print(f"  -> 結果: {msg}", flush=True)
-                    
-                    if status in ["success", "claimed"]:
-                        mark_player_redeemed(gift_code, p_id)
+                        page_ready = False  # 同一位玩家換下一組碼時，是否可以重複使用目前頁面(已填好ID/王國)
 
-                    results.append({
-                        "name": p_name,
-                        "player_id": p_id,
-                        "gift_code": gift_code,
-                        "status": status,
-                        "msg": msg
-                    })
-                    time.sleep(random.uniform(1.8, 3.5))
+                        for gift_code in gift_codes:
+                            if is_player_redeemed(gift_code, p_id):
+                                msg = "⏩ 本次略過 (先前已領過)"
+                                print(f"[{p_kingdom}服] {p_name} 已經領過 {gift_code}，本次略過", flush=True)
+                                results.append({
+                                    "name": p_name,
+                                    "player_id": p_id,
+                                    "gift_code": gift_code,
+                                    "status": "claimed",
+                                    "msg": msg
+                                })
+                                continue
 
-            browser.close()
+                            print(f"正在為 [{p_kingdom}服] {p_name} (ID: {p_id}) 兌換 {gift_code}...", flush=True)
+                            status, msg = redeem_with_browser(page, p_id, p_kingdom, gift_code, reuse_page=page_ready)
+                            print(f"  -> 結果: {msg}", flush=True)
 
-    send_discord_webhook(gift_codes, results)
+                            # 只要這次沒有整頁重載失敗(網頁操作異常)，下一組碼就可以繼續重複使用頁面
+                            page_ready = "網頁操作異常" not in msg
+
+                            if status in ["success", "claimed"]:
+                                mark_player_redeemed(gift_code, p_id)
+
+                            results.append({
+                                "name": p_name,
+                                "player_id": p_id,
+                                "gift_code": gift_code,
+                                "status": status,
+                                "msg": msg
+                            })
+                            time.sleep(random.uniform(1.8, 3.5))
+                finally:
+                    browser.close()
+    finally:
+        # 不管中途有沒有出錯，都把目前為止收集到的結果送出，避免整批任務靜默失敗
+        send_discord_webhook(gift_codes, results)
+
     print("🎉 任務執行完畢！", flush=True)
 
 if __name__ == "__main__":

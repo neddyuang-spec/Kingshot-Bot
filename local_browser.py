@@ -10,7 +10,6 @@ import requests
 from playwright.sync_api import sync_playwright
 
 # ================= 參數設定 =================
-# 正確的 Google 試算表 CSV 網址（已確認 0 與 O 正確）
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQFecEwf1fYIKawFfBVIZ51q-DrAx-yxeWNMHtwhlRWwkL585YTtEl9s31cBuA4yk3UVc5xna0Sc0k0/pub?output=csv"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1536658271593828372/lF8PouLi3QYo3gXliwf0qMq_9KnwuxBGQGxiUFUnuKhiq-ujWwqGtPFLAPlGCp9EpaU9"
 REDEEM_PAGE_URL = "https://ks-giftcode.centurygame.com/"
@@ -35,7 +34,6 @@ def get_players():
             raise ValueError("CSV 檔案內容為空")
             
         header = [str(h).strip().lower() for h in rows[0]]
-        print(f"👉 偵測到的試算表欄位標題: {header}", flush=True)
         
         players = []
         for row in rows[1:]:
@@ -70,15 +68,10 @@ def get_players():
     except Exception as e:
         print(f"❌ 試算表讀取失敗: {e}", flush=True)
 
-    # 備用名單
     return [
         {"kingdom": "1641", "name": "Light", "player_id": "246147093"},
         {"kingdom": "1641", "name": "Pig", "player_id": "264788350"},
-        {"kingdom": "1641", "name": "Ogre", "player_id": "279237769"},
-        {"kingdom": "1641", "name": "MiniLight", "player_id": "306868384"},
-        {"kingdom": "1641", "name": "Hinoki", "player_id": "265085587"},
-        {"kingdom": "1641", "name": "Flora", "player_id": "327944637"},
-        {"kingdom": "628", "name": "Handsome", "player_id": "347892324"}
+        {"kingdom": "1641", "name": "Ogre", "player_id": "279237769"}
     ]
 
 def get_all_gift_codes():
@@ -138,7 +131,6 @@ def get_all_gift_codes():
     return ["Kingshot888"]
 
 def load_history():
-    """載入誰領過什麼代碼的紀錄"""
     if not os.path.exists(RECORD_FILE):
         return {}
     try:
@@ -148,19 +140,16 @@ def load_history():
         return {}
 
 def save_history(history):
-    """儲存歷史紀錄"""
     with open(RECORD_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 def is_player_redeemed(gift_code, player_id):
-    """檢查特定玩家是否已經領過該禮包碼"""
     history = load_history()
     code_upper = gift_code.upper()
     redeemed_players = history.get(code_upper, [])
     return str(player_id) in redeemed_players
 
 def mark_player_redeemed(gift_code, player_id):
-    """將特定玩家標記為已領過該禮包碼"""
     history = load_history()
     code_upper = gift_code.upper()
     if code_upper not in history:
@@ -170,14 +159,12 @@ def mark_player_redeemed(gift_code, player_id):
     save_history(history)
 
 def human_type(locator, text):
-    """模擬真人不規則打字速度與停頓"""
     locator.click()
     for char in str(text):
         locator.press(char)
         time.sleep(random.uniform(0.07, 0.22))
 
 def redeem_with_browser(page, player_id, kingdom, gift_code):
-    """執行瀏覽器自動兌換"""
     try:
         page.goto(REDEEM_PAGE_URL, timeout=30000)
         page.wait_for_selector("input", timeout=15000)
@@ -221,25 +208,36 @@ def redeem_with_browser(page, player_id, kingdom, gift_code):
         return "failed", f"❌ 網頁操作異常: {str(e)}"
 
 def send_discord_webhook(gift_codes_list, results):
-    """將完整結果自動切成多份 Embed 傳送至 Discord"""
+    """將完整結果安全地切片並發送至 Discord，避免 400 Bad Request"""
     print("正在傳送完整結果給 Discord...", flush=True)
     
     success_count = sum(1 for r in results if r["status"] == "success" and "成功" in r["msg"])
     claimed_count = sum(1 for r in results if r["status"] == "claimed" or "略過" in r["msg"])
     fail_count = sum(1 for r in results if r["status"] == "failed" and "略過" not in r["msg"])
     
-    chunk_size = 10
+    # 將名單切成每組最多 8 筆，確保單個 Field 長度不超過 Discord 1024 字元限制
+    chunk_size = 8
     chunks = [results[i:i + chunk_size] for i in range(0, len(results), chunk_size)]
     if not chunks:
         chunks = [[]]
         
     embeds = []
     codes_str = ", ".join([f"`{c}`" for c in gift_codes_list])
+    if len(codes_str) > 900:
+        codes_str = codes_str[:900] + "..."
 
     for idx, chunk in enumerate(chunks):
-        details = [f"**{r['name']}** (`{r['player_id']}`) [{r.get('gift_code', '')}] - {r['msg']}" for r in chunk]
+        details = []
+        for r in chunk:
+            line = f"• **{r['name']}** (`{r['player_id']}`) [{r.get('gift_code', '')}] - {r['msg']}"
+            if len(line) > 150:
+                line = line[:147] + "..."
+            details.append(line)
+            
         details_str = "\n".join(details)
-        
+        if not details_str:
+            details_str = "無資料"
+            
         embed = {
             "title": f"🎁 Kingshot 盟友禮物碼自動兌換報告 ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else "🎁 Kingshot 盟友禮物碼每日自動兌換報告",
             "color": 3066993 if fail_count == 0 else 15158332,
@@ -252,21 +250,39 @@ def send_discord_webhook(gift_codes_list, results):
         
         embed["fields"].append({
             "name": f"詳細兌換清單 (第 {idx + 1} 部分)",
-            "value": details_str or "無資料",
+            "value": details_str,
             "inline": False
         })
         
         if idx == len(chunks) - 1:
-            embed["footer"] = {"text": "自動化排程任務 • 具備防重複與自動補領機制"}
+            embed["footer"] = {"text": "自動化排程任務 • 防重複與自動切片機制"}
             
         embeds.append(embed)
     
-    try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json={"username": "Kingshot 兌換小幫手", "embeds": embeds}, timeout=10)
-        res.raise_for_status()
-        print("👉 Discord 完整訊息發送成功！", flush=True)
-    except Exception as e:
-        print(f"❌ Discord Webhook 發送失敗: {e}", flush=True)
+    # Discord 單則訊息最多 10 個 embeds，超過就分成多則訊息依序發送
+    batch_size = 10
+    embed_batches = [embeds[i:i + batch_size] for i in range(0, len(embeds), batch_size)]
+    if not embed_batches:
+        embed_batches = [[]]
+
+    total_batches = len(embed_batches)
+    for batch_idx, embed_batch in enumerate(embed_batches):
+        try:
+            res = requests.post(
+                DISCORD_WEBHOOK_URL,
+                json={"username": "Kingshot 兌換小幫手", "embeds": embed_batch},
+                timeout=10
+            )
+            res.raise_for_status()
+            print(f"👉 Discord 訊息發送成功！({batch_idx + 1}/{total_batches})", flush=True)
+        except Exception as e:
+            print(f"❌ Discord Webhook 發送失敗 ({batch_idx + 1}/{total_batches}): {e}", flush=True)
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"   詳細回應內容: {e.response.text}", flush=True)
+
+        # 避免連續請求觸發 Discord 速率限制
+        if batch_idx < total_batches - 1:
+            time.sleep(1.0)
 
 def main():
     players = get_players()
@@ -326,9 +342,6 @@ def main():
 
     send_discord_webhook(gift_codes, results)
     print("🎉 任務執行完畢！", flush=True)
-
-if __name__ == "min":
-    pass
 
 if __name__ == "__main__":
     main()
